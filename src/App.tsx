@@ -204,17 +204,6 @@ function ClassCreate() {
   );
 }
 
-function htmlClassRow2(c: any) {
-  return (
-    <tr key={c.id}>
-      <td>{c.name}</td>
-      <td>{c.description || '-'}</td>
-      <td>{c.student_count}</td>
-      <td><Link to={`/teacher/classes/${c.id}`}><button className="secondary">Kelola</button></Link></td>
-    </tr>
-  );
-}
-
 function StudentProgress() {
   const [attempts, setAttempts] = useState<any[]>([]);
   const [busy, setBusy] = useState(false);
