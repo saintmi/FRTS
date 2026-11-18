@@ -45,7 +45,7 @@ function Nav() {
 }
 
 // Helper functions
-function htmlPreviewUrl(id: string) { return '/api/html/' + id + '?format=json'; }
+function htmlPreviewUrl(id: string) { return '/api/html/' + id; }
 
 function htmlUserRow(u: any) {
   return (
@@ -292,7 +292,7 @@ function AdminClasses() {
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.75rem' }}><h1 className="h1">Manajemen Kelas</h1></div>
       {busy && <div className="spinner" />}
       <table className="table"><thead><tr><th>Nama</th><th>Deskripsi</th><th>Guru</th><th>Siswa</th><th>Status</th></tr></thead>
-        <tbody>{classes.map((c: any) => htmlClassRow(c))}</tbody>
+        <tbody>{classes.map((c: any) => htmlClassRow2(c))}</tbody>
       </table>
     </div>
   );
