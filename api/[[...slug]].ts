@@ -329,6 +329,8 @@ async function dispatch(req: Request): Promise<Response> {
         const file = form?.file as File;
         const title = form?.title as string;
         const desc = form?.description as string || null;
+        const sourceSessionId = typeof form?.source_session_id === 'string' ? form.source_session_id.trim() : null;
+        if (sourceSessionId && s.role !== 'ADMIN') return err('Import materi kanonis hanya untuk admin', 403);
         if (!file) return err('No file', 400);
         if (!(file.name || '').toLowerCase().endsWith('.html')) return err('Only .html', 400);
         if (file.size > 2 * 1024 * 1024) return err('Too large', 400);
@@ -338,9 +340,15 @@ async function dispatch(req: Request): Promise<Response> {
         const content = Buffer.from(ab).toString('utf8');
         const checksum = crypto.createHash('sha256').update(content).digest('hex');
         if (!/<\s*html|<!DOCTYPE/i.test(content)) return err('Invalid HTML', 400);
-        const rows = await sql`INSERT INTO html_modules (id, title, description, version, content, checksum, uploaded_by, status, is_published, created_at, updated_at) VALUES (gen_random_uuid(), ${title || file.name}, ${desc}, 1, ${content}, ${checksum}, ${s.sub}, 'DRAFT', false, now(), now()) RETURNING id, title, description, version, checksum, status, is_published, created_at`;
+        if (sourceSessionId) {
+          const existing = await sql`SELECT id FROM html_modules WHERE source_session_id = ${sourceSessionId} LIMIT 1`;
+          if (existing[0]) return err('Sesi ini sudah terdaftar di bank HTML', 409, 'SESSION_ALREADY_IMPORTED');
+        }
+        const initialStatus = sourceSessionId ? 'REVIEW_REQUIRED' : 'DRAFT';
+        const rows = await sql`INSERT INTO html_modules (id, title, description, version, content, checksum, uploaded_by, source_session_id, status, is_published, created_at, updated_at) VALUES (gen_random_uuid(), ${title || file.name}, ${desc}, 1, ${content}, ${checksum}, ${s.sub}, ${sourceSessionId}, ${initialStatus}, false, now(), now()) RETURNING id, title, description, version, checksum, status, is_published, source_session_id, created_at`;
         const mod = rows[0];
         await sql`INSERT INTO html_module_versions (id, module_id, version, content, checksum, uploaded_by, created_at) VALUES (gen_random_uuid(), ${mod.id}, 1, ${content}, ${checksum}, ${s.sub}, now())`;
+        await writeAudit(s, 'HTML_MODULE_UPLOADED', 'html_module', mod.id, { title: mod.title, source_session_id: sourceSessionId, status: mod.status });
         return json({ html_module: mod }, 201);
       });
     }
@@ -360,12 +368,11 @@ async function dispatch(req: Request): Promise<Response> {
         else if (s.role === 'TEACHER' && mod.uploaded_by === s.sub) auth = true;
         else if (s.role === 'STUDENT') { const r = await sql`SELECT 1 FROM html_modules hm JOIN class_assignments ca ON ca.html_module_id = hm.id JOIN class_memberships cm ON cm.class_id = ca.class_id AND cm.user_id = ${s.sub} WHERE hm.id = ${id} AND hm.is_published = true AND ca.is_active = true`; auth = !!r[0]; }
         if (!auth) return err('Forbidden', 403);
-        if (format === 'json') return json({ id: mod.id, title: mod.title, description: mod.description, version: mod.version, status: mod.status, is_published: mod.is_published, checksum: mod.checksum });
+        if (format === 'json') return json({ id: mod.id, title: mod.title, description: mod.description, version: mod.version, status: mod.status, is_published: mod.is_published, checksum: mod.checksum, source_session_id: mod.source_session_id });
         const h = new Headers();
         h.set('Content-Type', 'text/html; charset=utf-8');
         h.set('X-Content-Type-Options', 'nosniff');
-        h.set('X-Frame-Options', 'DENY');
-        h.set('Content-Security-Policy', "default-src 'none'; script-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none';");
+        h.set('Content-Security-Policy', "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data: blob:; font-src data:; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'self';");
         h.set('Cache-Control', 'no-store');
         return new Response(mod.content, { status: 200, headers: h });
       });
@@ -378,14 +385,15 @@ async function dispatch(req: Request): Promise<Response> {
         if (s.role !== 'TEACHER' && s.role !== 'ADMIN') return err('Forbidden', 403);
         if (mod.uploaded_by !== s.sub && s.role !== 'ADMIN') return err('Forbidden', 403);
         const b = await getBody(r);
-        const sets: string[] = [];
-        if (b?.title !== undefined) sets.push(`title = ${b.title}`);
-        if (b?.description !== undefined) sets.push(`description = ${b.description}`);
-        if (b?.status !== undefined) sets.push(`status = ${b.status}`);
-        if (sets.length === 0) return err('No fields', 400);
-        sets.push(`updated_at = now()`);
-        const q = `UPDATE html_modules SET ${sets.join(', ')} WHERE id = ${id} RETURNING id, title, description, status, updated_at`;
-        const rows = await sql`${q}`;
+        const title = b?.title !== undefined ? String(b.title).trim() : null;
+        const description = b?.description !== undefined ? (String(b.description).trim() || null) : null;
+        const status = b?.status !== undefined ? String(b.status).toUpperCase() : null;
+        if (title !== null && !title) return err('Judul tidak boleh kosong', 400);
+        if (status && !['DRAFT', 'REVIEW_REQUIRED', 'APPROVED', 'ARCHIVED'].includes(status)) return err('Status konten tidak valid', 400);
+        if (status && s.role !== 'ADMIN') return err('Hanya admin yang dapat mengubah status review', 403);
+        if (title === null && b?.description === undefined && status === null) return err('No fields', 400);
+        const rows = await sql`UPDATE html_modules SET title = COALESCE(${title}, title), description = CASE WHEN ${b?.description !== undefined} THEN ${description} ELSE description END, status = COALESCE(${status}, status), updated_at = now() WHERE id = ${id} RETURNING id, title, description, version, status, is_published, updated_at`;
+        await writeAudit(s, status ? 'HTML_STATUS_UPDATED' : 'HTML_MODULE_UPDATED', 'html_module', id, { status });
         return json({ html_module: rows[0] });
       });
     }
@@ -395,9 +403,12 @@ async function dispatch(req: Request): Promise<Response> {
         if (!mod[0]) return err('Not found', 404);
         if (s.role !== 'ADMIN' && mod[0].uploaded_by !== s.sub) return err('Forbidden', 403);
         const b = await getBody(r);
-        if (b?.action === 'publish') {
+        if (b?.action === 'publish' || typeof b?.is_published === 'boolean') {
+          const current = await sql`SELECT status FROM html_modules WHERE id = ${id}`;
           const ip = b?.is_published === true;
-          const rows = await sql`UPDATE html_modules SET is_published = ${ip}, updated_at = now() WHERE id = ${id} RETURNING id, is_published`;
+          if (ip && current[0]?.status === 'REVIEW_REQUIRED') return err('Konten masih menunggu persetujuan admin', 409, 'REVIEW_REQUIRED');
+          const rows = await sql`UPDATE html_modules SET is_published = ${ip}, updated_at = now() WHERE id = ${id} RETURNING id, is_published, status`;
+          await writeAudit(s, ip ? 'HTML_MODULE_PUBLISHED' : 'HTML_MODULE_UNPUBLISHED', 'html_module', id, {});
           return json({ html_module: rows[0] });
         }
         return err('Not found', 404);
@@ -447,7 +458,7 @@ async function dispatch(req: Request): Promise<Response> {
         if (s.role === 'STUDENT') {
           rows = await sql`SELECT a.id, a.assignment_id, a.status, a.score, a.max_score, a.started_at, a.submitted_at, ca.title AS assignment_title, c.id AS class_id FROM attempts a JOIN class_assignments ca ON ca.id = a.assignment_id JOIN classes c ON c.id = ca.class_id WHERE a.student_id = ${s.sub} ORDER BY a.started_at DESC`;
         } else if (s.role === 'TEACHER') {
-          rows = await sql`SELECT a.id, a.student_id, u.email AS student_email, up.full_name AS student_name, a.status, a.score, a.max_score, a.started_at, a.submitted_at, ca.title AS assignment_title FROM attempts a JOIN users u ON u.id = a.student_id LEFT JOIN user_profiles up ON u.id = u.id JOIN class_assignments ca ON ca.id = a.assignment_id JOIN classes c ON c.id = ca.class_id AND c.teacher_id = ${s.sub} ORDER BY a.started_at DESC`;
+          rows = await sql`SELECT a.id, a.student_id, u.email AS student_email, up.full_name AS student_name, a.status, a.score, a.max_score, a.started_at, a.submitted_at, ca.title AS assignment_title FROM attempts a JOIN users u ON u.id = a.student_id LEFT JOIN user_profiles up ON up.user_id = u.id JOIN class_assignments ca ON ca.id = a.assignment_id JOIN classes c ON c.id = ca.class_id AND c.teacher_id = ${s.sub} ORDER BY a.started_at DESC`;
         } else {
           rows = await sql`SELECT * FROM attempts ORDER BY started_at DESC`;
         }
@@ -548,7 +559,7 @@ async function dispatch(req: Request): Promise<Response> {
       }
       if (aid) {
         if (s.role === 'TEACHER') { const asg = await sql`SELECT c.teacher_id FROM class_assignments ca JOIN classes c ON c.id=ca.class_id WHERE ca.id=${aid}`; if (!asg[0] || asg[0].teacher_id !== s.sub) return err('Forbidden', 403); }
-        const rows = await sql`SELECT a.id, u.email AS student_email, up.full_name AS student_name, a.status, a.score, a.max_score, a.submitted_at FROM attempts a JOIN users u ON u.id = a.student_id LEFT JOIN user_profiles up ON u.id = u.id WHERE a.assignment_id = ${aid} ORDER BY a.submitted_at DESC NULLS LAST`;
+        const rows = await sql`SELECT a.id, u.email AS student_email, up.full_name AS student_name, a.status, a.score, a.max_score, a.submitted_at FROM attempts a JOIN users u ON u.id = a.student_id LEFT JOIN user_profiles up ON up.user_id = u.id WHERE a.assignment_id = ${aid} ORDER BY a.submitted_at DESC NULLS LAST`;
         const tot = await sql`SELECT count(*) AS cnt FROM class_memberships WHERE class_id = (SELECT class_id FROM class_assignments WHERE id=${aid}) AND role='student'`;
         return json({ assignment_id: aid, total_students: Number(tot[0].cnt), submissions: rows.length, results: rows });
       }
