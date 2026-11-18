@@ -417,9 +417,17 @@ function StudentClasses() {
 
 function StudentAssignments() {
   const [assignments, setAssignments] = useState<any[]>([]);
+  const [attempts, setAttempts] = useState<any[]>([]);
   const [busy, setBusy] = useState(false);
   const navigate = useNavigate();
-  useEffect(() => { setBusy(true); getJSON('/api/assignments').then((d: any) => setAssignments(d.assignments || [])).finally(() => setBusy(false)); }, []);
+  useEffect(() => {
+    setBusy(true);
+    Promise.all([getJSON('/api/assignments'), getJSON('/api/attempts')])
+      .then(([a, t]: any[]) => { setAssignments(a.assignments || []); setAttempts(t.attempts || []); })
+      .catch(() => {})
+      .finally(() => setBusy(false));
+  }, []);
+  const attemptsByAssignment = new Map(attempts.map(a => [a.assignment_id, a]));
   return (
     <div className="page">
       <h1 className="h1">Latihan Saya</h1>
@@ -427,16 +435,59 @@ function StudentAssignments() {
       {!busy && assignments.length === 0 && <p className="muted">Belum ada latihan.</p>}
       {!busy && assignments.length > 0 && (
         <div className="row" style={{ flexDirection: 'column', gap: '0.75rem' }}>
-          {assignments.map((a: any) => (
-            <div key={a.id} className="card">
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'start' }}>
-                <div><div className="h1" style={{ fontSize: '1.05rem' }}>{a.title}</div><div className="muted small">{a.class_name} · v{a.version} · {a.html_status}</div>{a.due_at && <div className="muted small">Batas pengerjaan: {a.due_at}</div>}</div>
-                <button onClick={() => navigate(`/assessment/${a.id}`)}>Buka Latihan</button>
+          {assignments.map((a: any) => {
+            const prior: any = attemptsByAssignment.get(a.id);
+            return <div key={a.id} className="card">
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'start', gap: '1rem' }}>
+                <div><div className="h1" style={{ fontSize: '1.05rem' }}>{a.title}</div><div className="muted small">{a.class_name} · v{a.version} · {a.status}</div>{a.due_at && <div className="muted small">Batas pengerjaan: {a.due_at}</div>}</div>
+                {prior?.status === 'submitted' ? <span className="badge">Selesai · {prior.score ?? '—'}/{prior.max_score ?? '—'}</span> : <button onClick={() => navigate('/assessment/' + a.id)}>{prior?.status === 'in_progress' ? 'Lanjutkan' : 'Buka Latihan'}</button>}
               </div>
-            </div>
-          ))}
+            </div>;
+          })}
         </div>
       )}
+    </div>
+  );
+}
+
+function StudentProgress() {
+  const [attempts, setAttempts] = useState<any[]>([]);
+  const [vocabularyReports, setVocabularyReports] = useState<any[]>([]);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+  useEffect(() => {
+    setBusy(true);
+    Promise.all([getJSON('/api/attempts'), getJSON('/api/vocabulary-progress')])
+      .then(([a, v]: any[]) => { setAttempts(a.attempts || []); setVocabularyReports(v.vocabulary_reports || []); })
+      .catch((e: any) => setError(e.message || 'Progres gagal dimuat.'))
+      .finally(() => setBusy(false));
+  }, []);
+  const stats = (payload: any) => {
+    const ratings = Object.values(payload?.vocabulary_self_assessment || {}).filter((x: any) => ['remembered', 'unsure', 'review'].includes(x));
+    return {
+      remembered: ratings.filter(x => x === 'remembered').length,
+      unsure: ratings.filter(x => x === 'unsure').length,
+      review: ratings.filter(x => x === 'review').length
+    };
+  };
+  return (
+    <div className="page">
+      <h1 className="h1">Progres Saya</h1>
+      <p className="muted">Skor reading dan refleksi kosakata ditampilkan secara terpisah.</p>
+      <ErrorNotice value={error} />
+      {busy && <div className="spinner" />}
+      <div className="card"><h2 className="section-title">Reading Comprehension</h2>
+        {attempts.length === 0 ? <p className="muted">Belum ada pengerjaan.</p> :
+          <table className="table"><thead><tr><th>Assignment</th><th>Skor</th><th>Maks</th><th>Status</th><th>Waktu</th></tr></thead>
+            <tbody>{attempts.map((a: any) => studentAttemptRow(a))}</tbody>
+          </table>}
+      </div>
+      <div className="card"><h2 className="section-title">Vocabulary Recall — formatif</h2><p className="muted small">Pilihan “ingat”, “ragu”, dan “perlu diulang” adalah refleksi pada sesi tertentu, bukan status mastery permanen.</p>
+        {vocabularyReports.length === 0 ? <p className="muted">Belum ada laporan latihan kosakata.</p> :
+          <table className="table"><thead><tr><th>Sesi</th><th>Latihan</th><th>Ingat</th><th>Ragu</th><th>Perlu diulang</th><th>Waktu</th></tr></thead><tbody>
+            {vocabularyReports.map((v: any) => { const x = stats(v.payload); return <tr key={v.report_id}><td>{v.source_session_id || '—'}</td><td>{v.assignment_title}</td><td>{x.remembered}</td><td>{x.unsure}</td><td>{x.review}</td><td>{v.created_at}</td></tr>; })}
+          </tbody></table>}
+      </div>
     </div>
   );
 }
