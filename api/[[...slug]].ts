@@ -97,12 +97,12 @@ async function dispatch(req: Request): Promise<Response> {
   if (segs[0] === 'users' && segs.length === 1) {
     if (method === 'GET') {
       return await withAuth(req, async (_r, s) => {
-        const rows = await sql\`
+        const rows = await sql`
           SELECT u.id, u.email, u.role, u.is_active, u.email_verified, u.created_at, u.updated_at,
                  up.full_name, up.institution
           FROM users u LEFT JOIN user_profiles up ON up.user_id = u.id
           ORDER BY u.created_at DESC
-        \`;
+        `;
         return json({ users: rows });
       }, ['ADMIN']);
     }
@@ -116,20 +116,20 @@ async function dispatch(req: Request): Promise<Response> {
         if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return err('Email tidak valid', 400, 'INVALID_EMAIL');
         if (password.length < 10) return err('Password minimal 10 karakter', 400, 'WEAK_PASSWORD');
         if (!['ADMIN', 'TEACHER', 'STUDENT'].includes(role)) return err('Role tidak valid', 400, 'INVALID_ROLE');
-        const existing = await sql\`SELECT id FROM users WHERE lower(email) = \${email}\`;
+        const existing = await sql`SELECT id FROM users WHERE lower(email) = ${email}`;
         if (existing[0]) return err('Email sudah digunakan', 409, 'EMAIL_EXISTS');
         const passwordHash = await hashPw(password);
-        const rows = await sql\`
+        const rows = await sql`
           INSERT INTO users (id, email, password_hash, role, is_active, email_verified, created_at, updated_at)
-          VALUES (gen_random_uuid(), \${email}, \${passwordHash}, \${role}, true, false, now(), now())
+          VALUES (gen_random_uuid(), ${email}, ${passwordHash}, ${role}, true, false, now(), now())
           RETURNING id, email, role, is_active, email_verified, created_at
-        \`;
+        `;
         const user = rows[0];
-        await sql\`
+        await sql`
           INSERT INTO user_profiles (id, user_id, full_name, created_at, updated_at)
-          VALUES (gen_random_uuid(), \${user.id}, \${fullName || null}, now(), now())
+          VALUES (gen_random_uuid(), ${user.id}, ${fullName || null}, now(), now())
           ON CONFLICT (user_id) DO UPDATE SET full_name = EXCLUDED.full_name, updated_at = now()
-        \`;
+        `;
         await writeAudit(s, 'USER_CREATED', 'user', user.id, { role, email });
         return json({ user: { ...user, full_name: fullName || null } }, 201);
       }, ['ADMIN']);
@@ -148,22 +148,22 @@ async function dispatch(req: Request): Promise<Response> {
       if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return err('Email tidak valid', 400, 'INVALID_EMAIL');
       if (id === s.sub && ((role && role !== 'ADMIN') || active === false)) return err('Anda tidak dapat menonaktifkan atau menurunkan role akun sendiri', 400, 'SELF_LOCKOUT');
       if (email) {
-        const duplicate = await sql\`SELECT id FROM users WHERE lower(email) = \${email} AND id <> \${id}\`;
+        const duplicate = await sql`SELECT id FROM users WHERE lower(email) = ${email} AND id <> ${id}`;
         if (duplicate[0]) return err('Email sudah digunakan', 409, 'EMAIL_EXISTS');
       }
-      const rows = await sql\`
-        UPDATE users SET email = COALESCE(\${email}, email), role = COALESCE(\${role}, role),
-        is_active = COALESCE(\${active}, is_active), updated_at = now()
-        WHERE id = \${id}
+      const rows = await sql`
+        UPDATE users SET email = COALESCE(${email}, email), role = COALESCE(${role}, role),
+        is_active = COALESCE(${active}, is_active), updated_at = now()
+        WHERE id = ${id}
         RETURNING id, email, role, is_active, email_verified, updated_at
-      \`;
+      `;
       if (!rows[0]) return err('User tidak ditemukan', 404);
       if (fullName !== undefined) {
-        await sql\`
+        await sql`
           INSERT INTO user_profiles (id, user_id, full_name, created_at, updated_at)
-          VALUES (gen_random_uuid(), \${id}, \${fullName || null}, now(), now())
+          VALUES (gen_random_uuid(), ${id}, ${fullName || null}, now(), now())
           ON CONFLICT (user_id) DO UPDATE SET full_name = EXCLUDED.full_name, updated_at = now()
-        \`;
+        `;
       }
       await writeAudit(s, 'USER_UPDATED', 'user', id, { role, email, is_active: active, full_name_changed: fullName !== undefined });
       return json({ user: rows[0] });
@@ -580,10 +580,10 @@ async function dispatch(req: Request): Promise<Response> {
     return await withAuth(req, async (r, s) => {
       const url = new URL(r.url);
       const limit = Math.min(200, Math.max(1, Number(url.searchParams.get('limit') || 100)));
-      const rows = await sql\`
+      const rows = await sql`
         SELECT id, actor_id, actor_email, action, entity_type, entity_id, metadata, created_at
-        FROM audit_logs ORDER BY created_at DESC LIMIT \${limit}
-      \`;
+        FROM audit_logs ORDER BY created_at DESC LIMIT ${limit}
+      `;
       return json({ audit_logs: rows });
     }, ['ADMIN']);
   }
@@ -600,13 +600,13 @@ async function dispatch(req: Request): Promise<Response> {
       if (!cid && !aid) {
         if (s.role !== 'ADMIN') return err('class_id or assignment_id required', 400);
         const [users, classes, modules, assignments, attempts, imports, recent] = await Promise.all([
-          sql\`SELECT role, count(*)::int AS count FROM users GROUP BY role\`,
-          sql\`SELECT count(*)::int AS count, count(*) FILTER (WHERE is_active)::int AS active FROM classes\`,
-          sql\`SELECT status, count(*)::int AS count FROM html_modules GROUP BY status\`,
-          sql\`SELECT count(*)::int AS count, count(*) FILTER (WHERE is_active)::int AS active FROM class_assignments\`,
-          sql\`SELECT status, count(*)::int AS count FROM attempts GROUP BY status\`,
-          sql\`SELECT package_name, package_version, status, total_questions, total_sessions, imported_questions, created_at FROM content_imports ORDER BY created_at DESC LIMIT 8\`,
-          sql\`SELECT a.id AS attempt_id, a.status, a.score, a.max_score, a.submitted_at, ca.title AS assignment_title, c.name AS class_name, u.email AS student_email, up.full_name AS student_name FROM attempts a JOIN class_assignments ca ON ca.id = a.assignment_id JOIN classes c ON c.id = ca.class_id JOIN users u ON u.id = a.student_id LEFT JOIN user_profiles up ON up.user_id = u.id ORDER BY a.started_at DESC LIMIT 12\`
+          sql`SELECT role, count(*)::int AS count FROM users GROUP BY role`,
+          sql`SELECT count(*)::int AS count, count(*) FILTER (WHERE is_active)::int AS active FROM classes`,
+          sql`SELECT status, count(*)::int AS count FROM html_modules GROUP BY status`,
+          sql`SELECT count(*)::int AS count, count(*) FILTER (WHERE is_active)::int AS active FROM class_assignments`,
+          sql`SELECT status, count(*)::int AS count FROM attempts GROUP BY status`,
+          sql`SELECT package_name, package_version, status, total_questions, total_sessions, imported_questions, created_at FROM content_imports ORDER BY created_at DESC LIMIT 8`,
+          sql`SELECT a.id AS attempt_id, a.status, a.score, a.max_score, a.submitted_at, ca.title AS assignment_title, c.name AS class_name, u.email AS student_email, up.full_name AS student_name FROM attempts a JOIN class_assignments ca ON ca.id = a.assignment_id JOIN classes c ON c.id = ca.class_id JOIN users u ON u.id = a.student_id LEFT JOIN user_profiles up ON up.user_id = u.id ORDER BY a.started_at DESC LIMIT 12`
         ]);
         return json({
           summary: { users, classes: classes[0] || { count: 0, active: 0 }, html_modules_by_status: modules, assignments: assignments[0] || { count: 0, active: 0 }, attempts_by_status: attempts },
