@@ -347,7 +347,12 @@ async function dispatch(req: Request): Promise<Response> {
           let moduleData: any;
           try { moduleData = JSON.parse(moduleDataMatch[1]); } catch { return err('Data modul HTML bukan JSON valid', 422, 'MODULE_DATA_INVALID'); }
           if (moduleData.session_id !== sourceSessionId) return err('ID sesi pada HTML tidak cocok dengan metadata upload', 422, 'SESSION_ID_MISMATCH');
-          if (moduleData.bank_id !== sourceBankId) return err('ID bank pada HTML tidak cocok dengan metadata upload', 422, 'BANK_ID_MISMATCH');
+          if (moduleData.bank_id && moduleData.bank_id !== sourceBankId) return err('ID bank pada HTML tidak cocok dengan metadata upload', 422, 'BANK_ID_MISMATCH');
+          moduleData.program = moduleData.program || 'FRTS';
+          moduleData.bank_id = sourceBankId;
+          moduleData.bank_version = moduleData.bank_version || '0.4';
+          moduleData.status = 'REVIEW_REQUIRED';
+          content = content.replace(moduleDataMatch[1], JSON.stringify(moduleData));
           const bridgeMarker = "const blob=new Blob([JSON.stringify(report,null,2)]";
           if (!content.includes('function exportReport(){const report=') || !content.includes(bridgeMarker)) return err('Format laporan HTML tidak sesuai kontrak FRTS Vocabulary-First', 422, 'HTML_REPORT_CONTRACT_MISMATCH');
           content = content.replace(bridgeMarker, "if(window.parent!==window){window.parent.postMessage({type:'FRTS_ATTEMPT_REPORT',payload:report},'*');}const blob=new Blob([JSON.stringify(report,null,2)]");
