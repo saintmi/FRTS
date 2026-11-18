@@ -248,6 +248,14 @@ function ClassDetail() {
     setBusy(true);
     getJSON(`/api/classes/${id}`).then((a: any) => { setCls(a.class); setInvite(a.invite || null); setMembers(a.members || []); }).catch((e: any) => setErr(e.message || 'Detail kelas gagal dimuat.')).finally(() => setBusy(false));
   }, [id]);
+  async function deactivateInvite() {
+    setErr(''); setBusy(true);
+    try {
+      await postJSON(`/api/classes/${id}`, { action: 'deactivate_invite' });
+      setInvite(null);
+    } catch (err: any) { setErr(err.message || 'Gagal menonaktifkan kode undangan'); }
+    finally { setBusy(false); }
+  }
   async function genInvite() {
     setErr(''); setBusy(true);
     try {
@@ -268,7 +276,7 @@ function ClassDetail() {
         <>
           <div className="card"><h2 className="h1" style={{ fontSize: '1.1rem', marginBottom: '0.5rem' }}>Kode Undangan</h2>
             {invite ? (
-              <div className="row"><div className="col"><strong>{invite.code}</strong></div><div className="muted small">Aktif: {invite.is_active ? 'Ya' : 'Tidak'} | Digunakan: {invite.used_count}{invite.max_uses !== null ? `/${invite.max_uses}` : ''} | Expired: {invite.expires_at || '-'}</div></div>
+              <div className="row"><div className="col"><strong>{invite.code}</strong></div><div className="muted small">Aktif: {invite.is_active ? 'Ya' : 'Tidak'} | Digunakan: {invite.used_count}{invite.max_uses !== null ? `/${invite.max_uses}` : ''} | Expired: {invite.expires_at || '-'}</div><button className="secondary" type="button" onClick={() => setInvite(null)}>Buat kode baru</button>{invite.is_active && <button className="danger" type="button" onClick={deactivateInvite} disabled={busy}>Nonaktifkan kode</button>}</div>
             ) : (
               <form onSubmit={(e) => { e.preventDefault(); genInvite(); }} className="row" style={{ gap: '0.5rem' }}>
                 <input value={newCode} onChange={e => setNewCode(e.target.value)} placeholder="Kode (kosongkan untuk otomatis)" />

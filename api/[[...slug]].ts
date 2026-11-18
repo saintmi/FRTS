@@ -278,6 +278,11 @@ async function dispatch(req: Request): Promise<Response> {
           await writeAudit(s, 'CLASS_INVITE_CREATED', 'class', id, { max_uses: mu, expires_at: ea });
           return json({ invite: rows[0] }, 201);
         }
+        if (b?.action === 'deactivate_invite') {
+          const rows = await sql`UPDATE class_invites SET is_active = false WHERE class_id = ${id} AND is_active = true RETURNING id, code, is_active, used_count, max_uses, expires_at`;
+          await writeAudit(s, 'CLASS_INVITE_DEACTIVATED', 'class', id, { count: rows.length });
+          return json({ invite: rows[0] || null });
+        }
         return err('Not found', 404);
       });
     }
