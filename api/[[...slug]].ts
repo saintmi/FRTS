@@ -10,19 +10,23 @@ let client: any = null;
 function c(): any { if (!client) client = neon(gdu()); return client; }
 export function sql(strings: TemplateStringsArray, ...values: any[]): any { return c()(strings, ...values); }
 
-const AUTH_SECRET = process.env.AUTH_SECRET || 'dev-secret-change-me';
+const AUTH_SECRET = process.env.AUTH_SECRET;
 const COOKIE_NAME = 'frts_session';
 const COOKIE_MAX_AGE = 60 * 60 * 24 * 7;
 interface Session { sub: string; email: string; role: string; }
 async function hashPw(pw: string): Promise<string> { return bcrypt.hash(pw, 12); }
 async function cmpPw(p: string, h: string): Promise<boolean> { return bcrypt.compare(p, h); }
-function signSess(p: Session): string { return jwt.sign(p, AUTH_SECRET, { expiresIn: COOKIE_MAX_AGE }); }
-function verSess(t: string): Session | null { try { return jwt.verify(t, AUTH_SECRET) as Session; } catch { return null; } }
+function signSess(p: Session): string { if (!AUTH_SECRET) throw new Error('AUTH_SECRET is not configured'); return jwt.sign(p, AUTH_SECRET, { expiresIn: COOKIE_MAX_AGE }); }
+function verSess(t: string): Session | null { if (!AUTH_SECRET) return null; try { return jwt.verify(t, AUTH_SECRET) as Session; } catch { return null; } }
 function getSess(ch: string | null | undefined): Session | null { if (!ch) return null; const t = (parse(ch) as any)[COOKIE_NAME]; if (!t) return null; return verSess(t); }
 function setSess(t: string): string { return serialize(COOKIE_NAME, t, { httpOnly: true, secure: process.env.NODE_ENV === 'production', sameSite: 'lax', path: '/', maxAge: COOKIE_MAX_AGE }); }
 function clearSess(): string { return serialize(COOKIE_NAME, '', { httpOnly: true, secure: process.env.NODE_ENV === 'production', sameSite: 'lax', path: '/', maxAge: 0 }); }
 function json(d: any, s = 200, i?: ResponseInit) { return new Response(JSON.stringify(d), { status: s, headers: { 'Content-Type': 'application/json', ...(i?.headers || {}) } }); }
 function err(m: string, s = 400, c?: string) { return json({ error: m, code: c }, s); }
+async function writeAudit(session: Session, action: string, entityType: string, entityId: string | null, metadata: any = {}) {
+  try { await sql`INSERT INTO audit_logs (id, actor_id, actor_email, action, entity_type, entity_id, metadata, created_at) VALUES (gen_random_uuid(), ${session.sub}, ${session.email}, ${action}, ${entityType}, ${entityId}, ${JSON.stringify(metadata)}, now())`; }
+  catch { /* audit failure must not interrupt core workflows */ }
+}
 async function getBody(req: Request): Promise<any> {
   const ct = req.headers.get('content-type') || '';
   if (ct.includes('application/json')) { const t = await req.text(); try { return JSON.parse(t); } catch { return {}; } }
@@ -59,6 +63,7 @@ async function dispatch(req: Request): Promise<Response> {
   if (segs.length === 2 && segs[0] === 'auth') {
     const action = segs[1];
     if (action === 'login' && method === 'POST') {
+      if (!AUTH_SECRET) return err('Authentication is not configured', 500, 'AUTH_CONFIG_MISSING');
       const b = await getBody(req);
       const email: string = b?.email; const pw: string = b?.password;
       if (!email || !pw) return err('Email and password required', 400);
@@ -88,6 +93,83 @@ async function dispatch(req: Request): Promise<Response> {
     return err('Not found', 404);
   }
 
+
+  if (segs[0] === 'users' && segs.length === 1) {
+    if (method === 'GET') {
+      return await withAuth(req, async (_r, s) => {
+        const rows = await sql\`
+          SELECT u.id, u.email, u.role, u.is_active, u.email_verified, u.created_at, u.updated_at,
+                 up.full_name, up.institution
+          FROM users u LEFT JOIN user_profiles up ON up.user_id = u.id
+          ORDER BY u.created_at DESC
+        \`;
+        return json({ users: rows });
+      }, ['ADMIN']);
+    }
+    if (method === 'POST') {
+      return await withAuth(req, async (r, s) => {
+        const b = await getBody(r);
+        const email = String(b?.email || '').trim().toLowerCase();
+        const password = String(b?.password || '');
+        const role = String(b?.role || 'STUDENT').toUpperCase();
+        const fullName = String(b?.full_name || '').trim();
+        if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return err('Email tidak valid', 400, 'INVALID_EMAIL');
+        if (password.length < 10) return err('Password minimal 10 karakter', 400, 'WEAK_PASSWORD');
+        if (!['ADMIN', 'TEACHER', 'STUDENT'].includes(role)) return err('Role tidak valid', 400, 'INVALID_ROLE');
+        const existing = await sql\`SELECT id FROM users WHERE lower(email) = \${email}\`;
+        if (existing[0]) return err('Email sudah digunakan', 409, 'EMAIL_EXISTS');
+        const passwordHash = await hashPw(password);
+        const rows = await sql\`
+          INSERT INTO users (id, email, password_hash, role, is_active, email_verified, created_at, updated_at)
+          VALUES (gen_random_uuid(), \${email}, \${passwordHash}, \${role}, true, false, now(), now())
+          RETURNING id, email, role, is_active, email_verified, created_at
+        \`;
+        const user = rows[0];
+        await sql\`
+          INSERT INTO user_profiles (id, user_id, full_name, created_at, updated_at)
+          VALUES (gen_random_uuid(), \${user.id}, \${fullName || null}, now(), now())
+          ON CONFLICT (user_id) DO UPDATE SET full_name = EXCLUDED.full_name, updated_at = now()
+        \`;
+        await writeAudit(s, 'USER_CREATED', 'user', user.id, { role, email });
+        return json({ user: { ...user, full_name: fullName || null } }, 201);
+      }, ['ADMIN']);
+    }
+    return err('Method not allowed', 405);
+  }
+  if (segs[0] === 'users' && segs.length === 2 && ['PUT', 'PATCH'].includes(method)) {
+    const id = segs[1];
+    return await withAuth(req, async (r, s) => {
+      const b = await getBody(r);
+      const role = b?.role !== undefined ? String(b.role).toUpperCase() : null;
+      const email = b?.email !== undefined ? String(b.email).trim().toLowerCase() : null;
+      const active = b?.is_active !== undefined ? Boolean(b.is_active) : null;
+      const fullName = b?.full_name !== undefined ? String(b.full_name).trim() : undefined;
+      if (role && !['ADMIN', 'TEACHER', 'STUDENT'].includes(role)) return err('Role tidak valid', 400, 'INVALID_ROLE');
+      if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return err('Email tidak valid', 400, 'INVALID_EMAIL');
+      if (id === s.sub && ((role && role !== 'ADMIN') || active === false)) return err('Anda tidak dapat menonaktifkan atau menurunkan role akun sendiri', 400, 'SELF_LOCKOUT');
+      if (email) {
+        const duplicate = await sql\`SELECT id FROM users WHERE lower(email) = \${email} AND id <> \${id}\`;
+        if (duplicate[0]) return err('Email sudah digunakan', 409, 'EMAIL_EXISTS');
+      }
+      const rows = await sql\`
+        UPDATE users SET email = COALESCE(\${email}, email), role = COALESCE(\${role}, role),
+        is_active = COALESCE(\${active}, is_active), updated_at = now()
+        WHERE id = \${id}
+        RETURNING id, email, role, is_active, email_verified, updated_at
+      \`;
+      if (!rows[0]) return err('User tidak ditemukan', 404);
+      if (fullName !== undefined) {
+        await sql\`
+          INSERT INTO user_profiles (id, user_id, full_name, created_at, updated_at)
+          VALUES (gen_random_uuid(), \${id}, \${fullName || null}, now(), now())
+          ON CONFLICT (user_id) DO UPDATE SET full_name = EXCLUDED.full_name, updated_at = now()
+        \`;
+      }
+      await writeAudit(s, 'USER_UPDATED', 'user', id, { role, email, is_active: active, full_name_changed: fullName !== undefined });
+      return json({ user: rows[0] });
+    }, ['ADMIN']);
+  }
+
   if (segs.length === 1 && segs[0] === 'classes') {
     if (method === 'GET') {
       return await withAuth(req, async (_r, s) => {
@@ -110,6 +192,7 @@ async function dispatch(req: Request): Promise<Response> {
         if (!name) return err('Name required', 400);
         const tid = s.role === 'ADMIN' ? (b?.teacher_id || s.sub) : s.sub;
         const rows = await sql`INSERT INTO classes (id, name, description, teacher_id) VALUES (gen_random_uuid(), ${name}, ${desc || null}, ${tid}) RETURNING id, name, description, teacher_id, is_active, created_at`;
+        await writeAudit(s, 'CLASS_CREATED', 'class', rows[0].id, { name });
         return json({ class: rows[0] }, 201);
       });
     }
@@ -125,8 +208,9 @@ async function dispatch(req: Request): Promise<Response> {
         if (!cls) return err('Class not found', 404);
         if (s.role === 'TEACHER' && cls.teacher_id !== s.sub) return err('Forbidden', 403);
         if (s.role === 'STUDENT') { const m = await sql`SELECT 1 FROM class_memberships WHERE class_id = ${id} AND user_id = ${s.sub}`; if (!m[0]) return err('Forbidden', 403); }
-        const members = await sql`SELECT cm.user_id, u.email, up.full_name, cm.role, cm.joined_at FROM class_memberships cm JOIN users u ON u.id = cm.user_id LEFT JOIN user_profiles up ON u.id = u.id WHERE cm.class_id = ${id} ORDER BY cm.joined_at`;
-        return json({ class: cls, members });
+        const members = await sql`SELECT cm.user_id, u.email, up.full_name, cm.role, cm.joined_at FROM class_memberships cm JOIN users u ON u.id = cm.user_id LEFT JOIN user_profiles up ON up.user_id = u.id WHERE cm.class_id = ${id} ORDER BY cm.joined_at`;
+        const inviteRows = s.role === 'STUDENT' ? [] : await sql`SELECT id, code, max_uses, used_count, expires_at, is_active, created_at FROM class_invites WHERE class_id = ${id} ORDER BY created_at DESC LIMIT 1`;
+        return json({ class: cls, members, invite: inviteRows[0] || null });
       });
     }
     if (method === 'PUT') {
@@ -136,13 +220,13 @@ async function dispatch(req: Request): Promise<Response> {
         if (!ex[0]) return err('Class not found', 404);
         if (s.role === 'TEACHER' && ex[0].teacher_id !== s.sub) return err('Forbidden', 403);
         const b = await getBody(r);
-        const sets: string[] = [];
-        if (b?.name !== undefined) sets.push(`name = ${b.name}`);
-        if (b?.description !== undefined) sets.push(`description = ${b.description}`);
-        if (b?.is_active !== undefined) sets.push(`is_active = ${b.is_active}`);
-        if (sets.length === 0) return err('No fields', 400);
-        sets.push(`updated_at = now()`);
-        const rows = await sql`UPDATE classes SET ${sets.join(', ')} WHERE id = ${id} RETURNING id, name, description, is_active, updated_at`;
+        const name = b?.name !== undefined ? String(b.name).trim() : null;
+        const description = b?.description !== undefined ? (String(b.description).trim() || null) : null;
+        const isActive = b?.is_active !== undefined ? Boolean(b.is_active) : null;
+        if (name === null && b?.description === undefined && isActive === null) return err('No fields', 400);
+        if (name !== null && !name) return err('Nama kelas tidak boleh kosong', 400);
+        const rows = await sql`UPDATE classes SET name = COALESCE(${name}, name), description = CASE WHEN ${b?.description !== undefined} THEN ${description} ELSE description END, is_active = COALESCE(${isActive}, is_active), updated_at = now() WHERE id = ${id} RETURNING id, name, description, is_active, updated_at`;
+        await writeAudit(s, 'CLASS_UPDATED', 'class', id, { name_changed: name !== null, active_changed: isActive !== null });
         return json({ class: rows[0] });
       });
     }
@@ -160,6 +244,7 @@ async function dispatch(req: Request): Promise<Response> {
           const ea = ed ? new Date(Date.now() + ed * 86400000).toISOString() : null;
           await sql`UPDATE class_invites SET is_active = false WHERE class_id = ${id} AND is_active = true`;
           const rows = await sql`INSERT INTO class_invites (id, class_id, code, max_uses, used_count, expires_at, is_active, created_by, created_at) VALUES (gen_random_uuid(), ${id}, ${code}, ${mu || null}, 0, ${ea || null}, true, ${s.sub}, now()) RETURNING id, code, max_uses, used_count, expires_at, is_active, created_at`;
+          await writeAudit(s, 'CLASS_INVITE_CREATED', 'class', id, { max_uses: mu, expires_at: ea });
           return json({ invite: rows[0] }, 201);
         }
         return err('Not found', 404);
