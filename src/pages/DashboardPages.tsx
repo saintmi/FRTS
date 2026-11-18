@@ -382,9 +382,10 @@ export function StudentDashboardPage() {
   }, []);
   useEffect(() => { void load(); }, [load]);
   const completed = attempts.filter(a => a.status === 'submitted');
+  const attemptsByAssignment = new Map(attempts.map(a => [a.assignment_id, a]));
   return <div className="page dashboard-page"><div className="page-heading"><div><h1 className="h1">Dashboard Siswa</h1><p className="muted">Kelas, latihan yang harus dikerjakan, dan riwayat hasil belajar.</p></div><button className="secondary" onClick={load}>Muat ulang</button></div><ErrorNotice value={error} />
     <div className="dashboard-grid"><Metric label="Kelas diikuti" value={classes.length} /><Metric label="Latihan tersedia" value={assignments.length} /><Metric label="Latihan selesai" value={completed.length} /><Metric label="Sedang dikerjakan" value={attempts.filter(a => a.status === 'in_progress').length} /></div>
-    <div className="card"><h2 className="section-title">Latihan yang tersedia</h2>{busy ? <div className="spinner" /> : assignments.length === 0 ? <Empty>Belum ada latihan yang diberikan guru. Gabung kelas atau hubungi guru.</Empty> : <div className="class-grid">{assignments.slice(0, 6).map(a => <div className="card mini-card" key={a.id}><strong>{a.title}</strong><p className="muted small">{a.class_name} · {a.html_title}</p><p className="muted small">{a.due_at ? 'Batas: ' + a.due_at : 'Tanpa batas waktu'}</p><Link to={'/assessment/' + a.id}>Buka latihan</Link></div>)}</div>}</div>
+    <div className="card"><h2 className="section-title">Latihan yang tersedia</h2>{busy ? <div className="spinner" /> : assignments.length === 0 ? <Empty>Belum ada latihan yang diberikan guru. Gabung kelas atau hubungi guru.</Empty> : <div className="class-grid">{assignments.slice(0, 6).map(a => { const prior = attemptsByAssignment.get(a.id); return <div className="card mini-card" key={a.id}><strong>{a.title}</strong><p className="muted small">{a.class_name} · {a.html_title}</p><p className="muted small">{a.due_at ? 'Batas: ' + a.due_at : 'Tanpa batas waktu'}</p>{prior?.status === 'submitted' ? <span className="badge">Sudah selesai</span> : <Link to={'/assessment/' + a.id}>{prior?.status === 'in_progress' ? 'Lanjutkan latihan' : 'Buka latihan'}</Link>}</div>; })}</div>}</div>
     <div className="card"><h2 className="section-title">Riwayat pengerjaan — Reading</h2>{attempts.length === 0 ? <Empty>Belum ada pengerjaan.</Empty> : <TableWrap><thead><tr><th>Latihan</th><th>Status</th><th>Skor reading</th><th>Waktu</th></tr></thead><tbody>{attempts.slice(0, 10).map(a => <tr key={a.id}><td>{a.assignment_title}</td><td>{a.status}</td><td>{a.score ?? '—'} / {a.max_score ?? '—'}</td><td>{a.submitted_at || a.started_at}</td></tr>)}</tbody></TableWrap>}</div>
     <div className="card"><h2 className="section-title">Ingatan kosakata — formatif</h2><p className="muted small">Penanda “ingat”, “ragu”, dan “perlu diulang” menunjukkan refleksi pada sesi tersebut. Sistem tidak menetapkan mastery permanen hanya dari satu jawaban.</p>{vocabularyReports.length === 0 ? <Empty>Belum ada laporan kosakata yang tersinkron.</Empty> : <TableWrap><thead><tr><th>Sesi</th><th>Latihan</th><th>Jawaban diketik</th><th>Ingat</th><th>Ragu</th><th>Perlu diulang</th><th>Waktu</th></tr></thead><tbody>{vocabularyReports.slice(0, 15).map(v => { const stats = vocabularySummary(v.payload); return <tr key={v.report_id}><td>{v.source_session_id || '—'}</td><td>{v.assignment_title}</td><td>{stats.responses}</td><td>{stats.remembered}</td><td>{stats.unsure}</td><td>{stats.review}</td><td>{v.created_at}</td></tr>; })}</tbody></TableWrap>}</div>
   </div>;
@@ -400,7 +401,18 @@ export function AssessmentViewerPage() {
   const [error, setError] = useState('');
   const frameRef = useRef<HTMLIFrameElement>(null);
   const lockRef = useRef(false);
-  useEffect(() => { if (!id) return; setBusy(true); getJSON('/api/assignments').then(d => setAssignment((d.assignments || []).find((a: Row) => a.id === id) || null)).catch(e => setError(e.message || 'Latihan gagal dimuat.')).finally(() => setBusy(false)); }, [id]);
+  useEffect(() => {
+    if (!id) return;
+    setBusy(true); setError(''); setResult(null);
+    Promise.all([getJSON('/api/assignments'), getJSON('/api/attempts')])
+      .then(([d, attemptsData]) => {
+        setAssignment((d.assignments || []).find((a: Row) => a.id === id) || null);
+        const existing = (attemptsData.attempts || []).find((a: Row) => a.assignment_id === id && a.status === 'submitted');
+        if (existing) setResult(existing);
+      })
+      .catch(e => setError(e.message || 'Latihan gagal dimuat.'))
+      .finally(() => setBusy(false));
+  }, [id]);
   useEffect(() => {
     async function onMessage(event: MessageEvent) {
       if (event.source !== frameRef.current?.contentWindow) return;
@@ -435,7 +447,7 @@ export function AssessmentViewerPage() {
   return <div className="page dashboard-page"><h1 className="h1">{assignment.title}</h1><p className="muted">{assignment.class_name} · {assignment.html_title || 'Materi HTML'}</p>
     {assignment.due_at && <p className="muted small">Batas: {assignment.due_at}</p>}
     <div className="notice-card"><strong>Cara mengirim hasil:</strong> selesaikan latihan sampai tahap “Memory Review”, lalu tekan tombol “Kirim hasil ke portal / unduh salinan”. Hasil kosakata dicatat sebagai latihan formatif, terpisah dari skor reading.</div>
-    <div className="card preview-wrap"><iframe ref={frameRef} className="viewer" src={'/api/html/' + assignment.html_module_id} title="Latihan FRTS" sandbox="allow-scripts allow-forms allow-downloads" /></div>
+    {result ? <div className="notice-card">Latihan ini sudah pernah dikirim. Hasil yang tersimpan ditampilkan di bawah dan tidak dapat dikirim ulang.</div> : <div className="card preview-wrap"><iframe ref={frameRef} className="viewer" src={'/api/html/' + assignment.html_module_id} title="Latihan FRTS" sandbox="allow-scripts allow-forms allow-downloads" /></div>}
     {status && <div className="alert success" aria-live="polite">{status}</div>}<ErrorNotice value={error} />
     {result && <div className="card"><h2 className="section-title">Hasil reading terverifikasi</h2><p><strong>{result.score}</strong> / {result.max_score}</p><p>Status: {result.status}</p><p className="muted small">Jawaban vocabulary disimpan sebagai laporan formatif dan tidak digabung ke skor reading.</p></div>}
   </div>;
