@@ -1,9 +1,9 @@
-const fs = require('fs');
-const path = require('path');
-const { execSync } = require('child_process');
-const crypto = require('crypto');
-
-const { neon } = require('@neondatabase/serverless');
+import fs from 'node:fs';
+import path from 'node:path';
+import os from 'node:os';
+import crypto from 'node:crypto';
+import { execSync } from 'node:child_process';
+import { neon } from '@neondatabase/serverless';
 
 function stripBom(s) { return s.replace(/^\uFEFF/, ''); }
 function loadEnv() {
@@ -18,6 +18,13 @@ function loadEnv() {
 
 const IMPORTS_DIR = path.resolve(process.cwd(), 'content', 'imports');
 const DRY_RUN = process.argv.includes('--dry-run');
+const packageArgIndex = process.argv.indexOf('--package');
+const packageArg = packageArgIndex >= 0 ? process.argv[packageArgIndex + 1] : null;
+const versionArgIndex = process.argv.indexOf('--version');
+const packageVersionArg = versionArgIndex >= 0 ? process.argv[versionArgIndex + 1] : null;
+if (packageArgIndex >= 0 && (!packageArg || path.basename(packageArg) !== packageArg || !packageArg.toLowerCase().endsWith('.zip'))) {
+  throw new Error('--package requires a ZIP filename located inside content/imports; paths are not accepted.');
+}
 
 const PACKAGES = [
   { file: 'FRTS_Batch_01_Audit_and_Revised_Artifacts_v0.2(2).zip', bankVersion: '0.2' },
@@ -116,14 +123,18 @@ async function main() {
   const sql = neon(env.DATABASE_URL);
   const report = { packages: [], total_sessions: 0, total_questions: 0, imported_questions: 0, skipped: 0, errors: [] };
 
-  for (const pkg of PACKAGES) {
+  const activePackages = packageArg
+    ? [{ file: packageArg, bankVersion: packageVersionArg || '0.4' }]
+    : PACKAGES;
+
+  for (const pkg of activePackages) {
     const zipPath = path.join(IMPORTS_DIR, pkg.file);
     if (!fs.existsSync(zipPath)) {
       report.errors.push({ package: pkg.file, error: 'File not found' });
       report.packages.push({ package: pkg.file, status: 'MISSING' });
       continue;
     }
-    const tmpDir = path.resolve(require('os').tmpdir(), 'frts-import-' + crypto.randomBytes(4).toString('hex'));
+    const tmpDir = path.resolve(os.tmpdir(), 'frts-import-' + crypto.randomBytes(4).toString('hex'));
     try {
       extractZip(zipPath, tmpDir);
       const bankJson = findBankJson(tmpDir);
