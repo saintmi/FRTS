@@ -340,7 +340,7 @@ async function dispatch(req: Request): Promise<Response> {
         let content = Buffer.from(ab).toString('utf8');
         if (!/<\s*html|<!DOCTYPE/i.test(content)) return err('Invalid HTML', 400);
         if (sourceSessionId) {
-          const sessionMatch = content.match(/\"session_id\"\\s*:\\s*\"([^\"]+)\"/);
+          const sessionMatch = content.match(/session_id["']\s*:\s*["']([^"']+)["']/);
           if (!sessionMatch || sessionMatch[1] !== sourceSessionId) return err('ID sesi pada HTML tidak cocok dengan metadata upload', 422, 'SESSION_ID_MISMATCH');
           const bridgeMarker = "const blob=new Blob([JSON.stringify(report,null,2)]";
           if (!content.includes('function exportReport(){const report=') || !content.includes(bridgeMarker)) return err('Format laporan HTML tidak sesuai kontrak FRTS Vocabulary-First', 422, 'HTML_REPORT_CONTRACT_MISMATCH');

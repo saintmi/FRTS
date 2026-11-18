@@ -184,7 +184,7 @@ export function AdminContentPage() {
           existingIds.add(item.sessionId);
         } catch (e: any) {
           failed++;
-          setError((old => old ? old + '\n' + item.sessionId + ': ' + (e.message || 'gagal') : item.sessionId + ': ' + (e.message || 'gagal')) as any);
+          setError(old => old ? old + '\n' + item.sessionId + ': ' + (e.message || 'gagal') : item.sessionId + ': ' + (e.message || 'gagal'));
         }
       }
       setNotice(imported + ' sesi diimpor sebagai REVIEW_REQUIRED; ' + skipped + ' sudah ada; ' + failed + ' gagal.');
