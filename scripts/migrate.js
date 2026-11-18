@@ -1,7 +1,6 @@
-const fs = require('fs');
-const path = require('path');
-
-const { neon } = require('@neondatabase/serverless');
+import fs from 'node:fs';
+import path from 'node:path';
+import { neon } from '@neondatabase/serverless';
 
 function stripBom(s) { return s.replace(/^\uFEFF/, ''); }
 
