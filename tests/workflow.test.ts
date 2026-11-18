@@ -20,7 +20,9 @@ import { sql } from '../lib/db.ts';
 const BASE = 'http://localhost';
 function stripBom(s: string) { return s.replace(/^\uFEFF/, ''); }
 function loadEnv() {
-  const raw = fs.readFileSync(path.resolve(process.cwd(), '.env'), 'utf8');
+  const envPath = path.resolve(process.cwd(), '.env');
+  if (!fs.existsSync(envPath)) return;
+  const raw = fs.readFileSync(envPath, 'utf8');
   const env: Record<string,string> = {};
   for (const line of stripBom(raw).split('\n')) {
     const m = line.match(/^([^=]+)=(.*)$/);
@@ -66,6 +68,7 @@ let correctValue: string;
 let attemptId: string;
 
 beforeAll(async () => {
+  if (!process.env.DATABASE_URL) return;
   const t = await sql`SELECT id FROM users WHERE email='teacher@frts.local'`;
   const s = await sql`SELECT id FROM users WHERE email='student@frts.local'`;
   const a = await sql`SELECT id FROM users WHERE email='admin@frts.local'`;
@@ -76,7 +79,8 @@ beforeAll(async () => {
   correctValue = key[0].answer.correct_value;
 });
 
-describe('FRTS workflow', () => {
+const integrationDescribe = process.env.DATABASE_URL ? describe : describe.skip;
+integrationDescribe('FRTS workflow', () => {
   it('login teacher + student', async () => {
     const r1 = await loginHandler(req('POST', '/api/auth/login', { email: 'teacher@frts.local', password: 'Teacher123!' }));
     expect(r1.status).toBe(200);
