@@ -529,6 +529,7 @@ async function dispatch(req: Request): Promise<Response> {
         const moduleRow = await sql`SELECT hm.source_session_id FROM class_assignments ca JOIN html_modules hm ON hm.id = ca.html_module_id WHERE ca.id = ${att[0].assignment_id}`;
         const sourceSessionId = moduleRow[0]?.source_session_id || null;
         let sourceQuestionMap = new Map<string, any>();
+        let legacyQuestionMap = new Map<string, any>();
         if (sourceSessionId) {
           const sourceQuestions = await sql`SELECT q.id, q.source_question_id, q.points, ak.answer FROM questions q JOIN learning_sessions ls ON ls.id = q.session_id LEFT JOIN question_answer_keys ak ON ak.question_id = q.id WHERE ls.source_session_id = ${sourceSessionId} ORDER BY q.source_question_id`;
           const expected = await sql`SELECT total_questions FROM learning_sessions WHERE source_session_id = ${sourceSessionId} LIMIT 1`;
@@ -536,22 +537,28 @@ async function dispatch(req: Request): Promise<Response> {
           if (!expectedCount || sourceQuestions.length !== expectedCount || sourceQuestions.some((q: any) => !q.answer)) return err('Bank soal atau answer key untuk sesi ini belum lengkap di server. Jawaban Anda tetap dapat disimpan sebagai laporan offline UNVERIFIED; nilai resmi belum tersedia.', 409, 'QUESTION_KEY_COVERAGE_INCOMPLETE');
           sourceQuestionMap = new Map(sourceQuestions.map((q: any) => [q.source_question_id, q]));
           if (ans.some((item: any) => !sourceQuestionMap.has(String(item.question_id)))) return err('ID soal yang dikirim tidak cocok dengan bank soal sesi ini. Hasil belum dinilai.', 409, 'QUESTION_ID_MISMATCH');
+        } else {
+          for (const item of ans) {
+            const questionId = String(item.question_id || '');
+            const row = (await sql`SELECT q.id, q.points, ak.answer FROM questions q LEFT JOIN question_answer_keys ak ON ak.question_id = q.id WHERE q.id::text = ${questionId} LIMIT 1`)[0];
+            if (!row || !row.answer) return err('Soal atau answer key tidak ditemukan. Hasil belum dinilai.', 409, 'QUESTION_KEY_MISSING');
+            legacyQuestionMap.set(questionId, row);
+          }
         }
-        let ts = 0, ms = 0; const ar: any[] = [];
+        let ts = 0, ms = sourceSessionId ? Array.from(sourceQuestionMap.values()).reduce((total: number, q: any) => total + Number(q.points || 0), 0) : 0; const ar: any[] = [];
         await sql`BEGIN`;
         try {
           for (const an of ans) {
             const qid = String(an.question_id || ''); const av = an.answer;
-            const q = sourceSessionId ? sourceQuestionMap.get(qid) : (await sql`SELECT id, points, (SELECT answer FROM question_answer_keys WHERE question_id = questions.id) AS answer FROM questions WHERE id::text = ${qid} LIMIT 1`)[0];
-            if (!q || !q.answer) return err('Soal atau kunci jawaban belum tersedia. Hasil belum dinilai.', 409, 'QUESTION_KEY_MISSING');
-            ms += Number(q.points || 0);
+            const q = sourceSessionId ? sourceQuestionMap.get(qid) : legacyQuestionMap.get(qid);
+            if (!sourceSessionId) ms += Number(q.points || 0);
             let ic = false, pe = 0;
             const key = q.answer;
             const correctValue = key && typeof key === 'object' ? key.correct_value : key;
             ic = deq(av, key) || (correctValue !== undefined && (deq(av, { correct_value: correctValue }) || (av && (av.selected === correctValue || av.correct_value === correctValue || av.value === correctValue)) || av === correctValue));
             if (ic) pe = Number(q.points || 0);
             ts += pe;
-            await sql`INSERT INTO attempt_answers (id, attempt_id, question_id, answer, is_correct, points_earned, created_at) VALUES (gen_random_uuid(), ${id}, ${qid}, ${JSON.stringify(av)}, ${ic}, ${pe}, now())`;
+            await sql`INSERT INTO attempt_answers (id, attempt_id, question_id, answer, is_correct, points_earned, created_at) VALUES (gen_random_uuid(), ${id}, ${q.id}, ${JSON.stringify(av)}, ${ic}, ${pe}, now())`;
             ar.push({ question_id: qid, is_correct: ic, points_earned: pe });
           }
           const rid = ik || cryptoRandBytes(4).toString('hex');
