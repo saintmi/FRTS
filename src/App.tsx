@@ -317,7 +317,7 @@ function AdminReview() {
   const [items, setItems] = useState<any[]>([]);
   const [busy, setBusy] = useState(false);
   useEffect(() => { setBusy(true); getJSON('/api/html').then((d: any) => { const pending = (d.html_modules || []).filter((h: any) => h.status !== 'APPROVED'); setItems(pending); }).finally(() => setBusy(false)); }, []);
-  async function setStatus(id: string, status: string) { await postJSON(`/api/html/${id}`, { status }); setItems(items.filter((i: any) => i.id !== id)); }
+  async function setStatus(id: string, status: string) { await getJSON(`/api/html/${id}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ status }) }); setItems(items.filter((i: any) => i.id !== id)); }
   return (
     <div className="page">
       <h1 className="h1">Review Konten</h1>
