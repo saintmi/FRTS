@@ -565,11 +565,13 @@ async function dispatch(req: Request): Promise<Response> {
         if (!aid) return err('assignment_id required', 400);
         const asg = (await sql`SELECT ca.id, ca.is_active, ca.start_at, ca.due_at, c.id AS class_id FROM class_assignments ca JOIN classes c ON c.id = ca.class_id WHERE ca.id = ${aid}`)[0];
         if (!asg) return err('Assignment not found', 404);
+        const mem = await sql`SELECT 1 FROM class_memberships WHERE class_id = ${asg.class_id} AND user_id = ${s.sub}`;
+        if (!mem[0]) return err('Not member', 403);
+        const existing = await sql`SELECT id, assignment_id, student_id, status, idempotency_key, started_at, score, max_score, submitted_at FROM attempts WHERE assignment_id = ${aid} AND student_id = ${s.sub}`;
+        if (existing[0]) return json({ attempt: existing[0] });
         if (!asg.is_active) return err('Penugasan sudah dinonaktifkan.', 409, 'ASSIGNMENT_INACTIVE');
         if (asg.start_at && new Date(asg.start_at) > new Date()) return err('Penugasan belum dimulai.', 409, 'ASSIGNMENT_NOT_STARTED');
         if (asg.due_at && new Date(asg.due_at) < new Date()) return err('Batas waktu penugasan telah lewat.', 409, 'ASSIGNMENT_DEADLINE_PASSED');
-        const mem = await sql`SELECT 1 FROM class_memberships WHERE class_id = ${asg.class_id} AND user_id = ${s.sub}`;
-        if (!mem[0]) return err('Not member', 403);
         const inserted = await sql`INSERT INTO attempts (id, assignment_id, student_id, status, idempotency_key, started_at) VALUES (gen_random_uuid(), ${aid}, ${s.sub}, 'in_progress', ${ik}, now()) ON CONFLICT (assignment_id, student_id) DO NOTHING RETURNING id, assignment_id, student_id, status, idempotency_key, started_at`;
         if (inserted[0]) return json({ attempt: inserted[0] }, 201);
         const existing = await sql`SELECT id, assignment_id, student_id, status, idempotency_key, started_at, score, max_score, submitted_at FROM attempts WHERE assignment_id = ${aid} AND student_id = ${s.sub}`;
