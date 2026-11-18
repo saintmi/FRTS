@@ -287,9 +287,9 @@ async function dispatch(req: Request): Promise<Response> {
 
         if (s.role === 'STUDENT') {
           const rows = await sql`
-            SELECT hm.id, hm.title, hm.description, hm.version, hm.checksum, hm.status, hm.is_published, hm.uploaded_by, hm.created_at, hm.updated_at, hm.source_session_id, ls.week, ls.session_no, ls.title as session_title
+            SELECT hm.id, hm.title, hm.description, hm.version, hm.checksum, hm.status, hm.is_published, hm.uploaded_by, hm.created_at, hm.updated_at, hm.source_bank_id, hm.source_session_id, ls.week, ls.session_no, ls.title as session_title
             FROM html_modules hm
-            LEFT JOIN learning_sessions ls ON hm.source_session_id = ls.source_session_id
+            LEFT JOIN learning_sessions ls ON hm.source_session_id = ls.source_session_id AND EXISTS (SELECT 1 FROM question_banks qb WHERE qb.id = ls.bank_id AND qb.source_bank_id = hm.source_bank_id)
             WHERE hm.is_published = true
               AND EXISTS (
                 SELECT 1 FROM class_assignments ca
@@ -307,9 +307,9 @@ async function dispatch(req: Request): Promise<Response> {
         }
 
         const rows = await sql`
-          SELECT hm.id, hm.title, hm.description, hm.version, hm.checksum, hm.status, hm.is_published, hm.uploaded_by, hm.created_at, hm.updated_at, hm.source_session_id, ls.week, ls.session_no, ls.title as session_title
+          SELECT hm.id, hm.title, hm.description, hm.version, hm.checksum, hm.status, hm.is_published, hm.uploaded_by, hm.created_at, hm.updated_at, hm.source_bank_id, hm.source_session_id, ls.week, ls.session_no, ls.title as session_title
           FROM html_modules hm
-          LEFT JOIN learning_sessions ls ON hm.source_session_id = ls.source_session_id
+          LEFT JOIN learning_sessions ls ON hm.source_session_id = ls.source_session_id AND EXISTS (SELECT 1 FROM question_banks qb WHERE qb.id = ls.bank_id AND qb.source_bank_id = hm.source_bank_id)
           ORDER BY ls.week, ls.session_no, hm.created_at DESC
         `;
         let filtered = rows;
@@ -330,7 +330,9 @@ async function dispatch(req: Request): Promise<Response> {
         const title = form?.title as string;
         const desc = form?.description as string || null;
         const sourceSessionId = typeof form?.source_session_id === 'string' ? form.source_session_id.trim() : null;
+        const sourceBankId = typeof form?.source_bank_id === 'string' ? form.source_bank_id.trim() : null;
         if (sourceSessionId && s.role !== 'ADMIN') return err('Import materi kanonis hanya untuk admin', 403);
+        if (Boolean(sourceSessionId) !== Boolean(sourceBankId)) return err('source_bank_id dan source_session_id harus diberikan bersama', 400, 'SOURCE_IDENTITY_INCOMPLETE');
         if (!file) return err('No file', 400);
         if (!(file.name || '').toLowerCase().endsWith('.html')) return err('Only .html', 400);
         if (file.size > 2 * 1024 * 1024) return err('Too large', 400);
@@ -340,8 +342,12 @@ async function dispatch(req: Request): Promise<Response> {
         let content = Buffer.from(ab).toString('utf8');
         if (!/<\s*html|<!DOCTYPE/i.test(content)) return err('Invalid HTML', 400);
         if (sourceSessionId) {
-          const sessionMatch = content.match(/session_id["']\s*:\s*["']([^"']+)["']/);
-          if (!sessionMatch || sessionMatch[1] !== sourceSessionId) return err('ID sesi pada HTML tidak cocok dengan metadata upload', 422, 'SESSION_ID_MISMATCH');
+          const moduleDataMatch = content.match(/<script[^>]*id=["']moduleData["'][^>]*>([\s\S]*?)<\/script>/i);
+          if (!moduleDataMatch) return err('Data modul HTML tidak ditemukan', 422, 'MODULE_DATA_MISSING');
+          let moduleData: any;
+          try { moduleData = JSON.parse(moduleDataMatch[1]); } catch { return err('Data modul HTML bukan JSON valid', 422, 'MODULE_DATA_INVALID'); }
+          if (moduleData.session_id !== sourceSessionId) return err('ID sesi pada HTML tidak cocok dengan metadata upload', 422, 'SESSION_ID_MISMATCH');
+          if (moduleData.bank_id !== sourceBankId) return err('ID bank pada HTML tidak cocok dengan metadata upload', 422, 'BANK_ID_MISMATCH');
           const bridgeMarker = "const blob=new Blob([JSON.stringify(report,null,2)]";
           if (!content.includes('function exportReport(){const report=') || !content.includes(bridgeMarker)) return err('Format laporan HTML tidak sesuai kontrak FRTS Vocabulary-First', 422, 'HTML_REPORT_CONTRACT_MISMATCH');
           content = content.replace(bridgeMarker, "if(window.parent!==window){window.parent.postMessage({type:'FRTS_ATTEMPT_REPORT',payload:report},'*');}const blob=new Blob([JSON.stringify(report,null,2)]");
@@ -349,14 +355,14 @@ async function dispatch(req: Request): Promise<Response> {
         }
         const checksum = crypto.createHash('sha256').update(content).digest('hex');
         if (sourceSessionId) {
-          const existing = await sql`SELECT id FROM html_modules WHERE source_session_id = ${sourceSessionId} LIMIT 1`;
+          const existing = await sql`SELECT id FROM html_modules WHERE source_bank_id = ${sourceBankId} AND source_session_id = ${sourceSessionId} LIMIT 1`;
           if (existing[0]) return err('Sesi ini sudah terdaftar di bank HTML', 409, 'SESSION_ALREADY_IMPORTED');
         }
         const initialStatus = sourceSessionId ? 'REVIEW_REQUIRED' : 'DRAFT';
-        const rows = await sql`INSERT INTO html_modules (id, title, description, version, content, checksum, uploaded_by, source_session_id, status, is_published, created_at, updated_at) VALUES (gen_random_uuid(), ${title || file.name}, ${desc}, 1, ${content}, ${checksum}, ${s.sub}, ${sourceSessionId}, ${initialStatus}, false, now(), now()) RETURNING id, title, description, version, checksum, status, is_published, source_session_id, created_at`;
+        const rows = await sql`INSERT INTO html_modules (id, title, description, version, content, checksum, uploaded_by, source_bank_id, source_session_id, status, is_published, created_at, updated_at) VALUES (gen_random_uuid(), ${title || file.name}, ${desc}, 1, ${content}, ${checksum}, ${s.sub}, ${sourceBankId}, ${sourceSessionId}, ${initialStatus}, false, now(), now()) RETURNING id, title, description, version, checksum, status, is_published, source_bank_id, source_session_id, created_at`;
         const mod = rows[0];
         await sql`INSERT INTO html_module_versions (id, module_id, version, content, checksum, uploaded_by, created_at) VALUES (gen_random_uuid(), ${mod.id}, 1, ${content}, ${checksum}, ${s.sub}, now())`;
-        await writeAudit(s, 'HTML_MODULE_UPLOADED', 'html_module', mod.id, { title: mod.title, source_session_id: sourceSessionId, status: mod.status });
+        await writeAudit(s, 'HTML_MODULE_UPLOADED', 'html_module', mod.id, { title: mod.title, source_bank_id: sourceBankId, source_session_id: sourceSessionId, status: mod.status });
         return json({ html_module: mod }, 201);
       });
     }
@@ -373,10 +379,10 @@ async function dispatch(req: Request): Promise<Response> {
         if (!mod) return err('Not found', 404);
         let auth = false;
         if (s.role === 'ADMIN') auth = true;
-        else if (s.role === 'TEACHER' && mod.uploaded_by === s.sub) auth = true;
+        else if (s.role === 'TEACHER' && (mod.uploaded_by === s.sub || mod.status === 'APPROVED')) auth = true;
         else if (s.role === 'STUDENT') { const r = await sql`SELECT 1 FROM html_modules hm JOIN class_assignments ca ON ca.html_module_id = hm.id JOIN class_memberships cm ON cm.class_id = ca.class_id AND cm.user_id = ${s.sub} WHERE hm.id = ${id} AND hm.is_published = true AND ca.is_active = true`; auth = !!r[0]; }
         if (!auth) return err('Forbidden', 403);
-        if (format === 'json') return json({ id: mod.id, title: mod.title, description: mod.description, version: mod.version, status: mod.status, is_published: mod.is_published, checksum: mod.checksum, source_session_id: mod.source_session_id });
+        if (format === 'json') return json({ id: mod.id, title: mod.title, description: mod.description, version: mod.version, status: mod.status, is_published: mod.is_published, checksum: mod.checksum, source_bank_id: mod.source_bank_id, source_session_id: mod.source_session_id });
         const h = new Headers();
         h.set('Content-Type', 'text/html; charset=utf-8');
         h.set('X-Content-Type-Options', 'nosniff');
@@ -430,9 +436,9 @@ async function dispatch(req: Request): Promise<Response> {
       return await withAuth(req, async (_r, s) => {
         let rows: any[];
         if (s.role === 'ADMIN') {
-          rows = await sql`SELECT ca.id, ca.title, ca.start_at, ca.due_at, ca.is_active, ca.created_at, c.id AS class_id, c.name AS class_name, hm.id AS html_module_id, hm.title AS html_title, hm.version, hm.status, hm.source_session_id, (SELECT count(*) FROM questions q JOIN learning_sessions ls ON ls.id = q.session_id WHERE ls.source_session_id = hm.source_session_id) AS linked_question_count, (SELECT count(*) FROM attempts a WHERE a.assignment_id = ca.id) AS attempt_count FROM class_assignments ca JOIN classes c ON c.id = ca.class_id JOIN html_modules hm ON hm.id = ca.html_module_id ORDER BY ca.created_at DESC`;
+          rows = await sql`SELECT ca.id, ca.title, ca.start_at, ca.due_at, ca.is_active, ca.created_at, c.id AS class_id, c.name AS class_name, hm.id AS html_module_id, hm.title AS html_title, hm.version, hm.status, hm.source_bank_id, hm.source_session_id, (SELECT count(*) FROM questions q JOIN learning_sessions ls ON ls.id = q.session_id JOIN question_banks qb ON qb.id = ls.bank_id WHERE qb.source_bank_id = hm.source_bank_id AND ls.source_session_id = hm.source_session_id) AS linked_question_count, (SELECT count(*) FROM attempts a WHERE a.assignment_id = ca.id) AS attempt_count FROM class_assignments ca JOIN classes c ON c.id = ca.class_id JOIN html_modules hm ON hm.id = ca.html_module_id ORDER BY ca.created_at DESC`;
         } else if (s.role === 'TEACHER') {
-          rows = await sql`SELECT ca.id, ca.title, ca.start_at, ca.due_at, ca.is_active, ca.created_at, c.id AS class_id, c.name AS class_name, hm.id AS html_module_id, hm.title AS html_title, hm.version, hm.status, (SELECT count(*) FROM attempts a WHERE a.assignment_id = ca.id) AS attempt_count FROM class_assignments ca JOIN classes c ON c.id = ca.class_id AND c.teacher_id = ${s.sub} JOIN html_modules hm ON hm.id = ca.html_module_id ORDER BY ca.created_at DESC`;
+          rows = await sql`SELECT ca.id, ca.title, ca.start_at, ca.due_at, ca.is_active, ca.created_at, c.id AS class_id, c.name AS class_name, hm.id AS html_module_id, hm.title AS html_title, hm.version, hm.status, hm.source_bank_id, hm.source_session_id, (SELECT count(*) FROM questions q JOIN learning_sessions ls ON ls.id = q.session_id JOIN question_banks qb ON qb.id = ls.bank_id WHERE qb.source_bank_id = hm.source_bank_id AND ls.source_session_id = hm.source_session_id) AS linked_question_count, (SELECT count(*) FROM attempts a WHERE a.assignment_id = ca.id) AS attempt_count FROM class_assignments ca JOIN classes c ON c.id = ca.class_id AND c.teacher_id = ${s.sub} JOIN html_modules hm ON hm.id = ca.html_module_id ORDER BY ca.created_at DESC`;
         } else {
           rows = await sql`SELECT ca.id, ca.title, ca.start_at, ca.due_at, ca.is_active, ca.created_at, c.id AS class_id, c.name AS class_name, hm.id AS html_module_id, hm.title AS html_title, hm.version, hm.status, hm.source_session_id, (SELECT count(*) FROM questions q JOIN learning_sessions ls ON ls.id = q.session_id WHERE ls.source_session_id = hm.source_session_id) AS linked_question_count, (SELECT count(*) FROM attempts a WHERE a.assignment_id = ca.id AND a.student_id = ${s.sub}) AS my_attempts FROM class_assignments ca JOIN classes c ON c.id = ca.class_id JOIN class_memberships cm ON cm.class_id = c.id AND cm.user_id = ${s.sub} JOIN html_modules hm ON hm.id = ca.html_module_id WHERE ca.is_active = true AND hm.is_published = true ORDER BY ca.created_at DESC`;
         }
@@ -449,13 +455,13 @@ async function dispatch(req: Request): Promise<Response> {
         const cls = (await sql`SELECT teacher_id FROM classes WHERE id = ${cid}`)[0];
         if (!cls) return err('Class not found', 404);
         if (s.role === 'TEACHER' && cls.teacher_id !== s.sub) return err('Forbidden', 403);
-        const hm = (await sql`SELECT id, status, is_published, source_session_id FROM html_modules WHERE id = ${hid}`)[0];
+        const hm = (await sql`SELECT id, status, is_published, source_bank_id, source_session_id FROM html_modules WHERE id = ${hid}`)[0];
         if (!hm) return err('HTML module not found', 404);
         if (!hm.is_published) return err('Materi belum diterbitkan', 409, 'NOT_PUBLISHED');
         if (hm.source_session_id && hm.status !== 'APPROVED') return err('Materi masih menunggu review admin', 409, 'REVIEW_REQUIRED');
         if (hm.source_session_id) {
-          const sessionInfo = await sql`SELECT total_questions FROM learning_sessions WHERE source_session_id = ${hm.source_session_id} LIMIT 1`;
-          const keyed = await sql`SELECT count(*)::int AS count FROM questions q JOIN learning_sessions ls ON ls.id = q.session_id JOIN question_answer_keys ak ON ak.question_id = q.id WHERE ls.source_session_id = ${hm.source_session_id}`;
+          const sessionInfo = await sql`SELECT ls.total_questions FROM learning_sessions ls JOIN question_banks qb ON qb.id = ls.bank_id WHERE ls.source_session_id = ${hm.source_session_id} AND qb.source_bank_id = ${hm.source_bank_id} LIMIT 1`;
+          const keyed = await sql`SELECT count(*)::int AS count FROM questions q JOIN learning_sessions ls ON ls.id = q.session_id JOIN question_banks qb ON qb.id = ls.bank_id JOIN question_answer_keys ak ON ak.question_id = q.id WHERE ls.source_session_id = ${hm.source_session_id} AND qb.source_bank_id = ${hm.source_bank_id}`;
           const expected = Number(sessionInfo[0]?.total_questions || 0);
           if (!expected || Number(keyed[0]?.count || 0) !== expected) return err('Bank soal atau answer key untuk sesi HTML ini belum lengkap di Neon. Import dan verifikasi bank/kunci terlebih dahulu.', 409, 'QUESTION_KEY_COVERAGE_INCOMPLETE');
         }
@@ -526,13 +532,14 @@ async function dispatch(req: Request): Promise<Response> {
         if (att[0].student_id !== s.sub) return err('Forbidden', 403);
         if (ik) { const rc = await sql`SELECT * FROM submission_receipts WHERE attempt_id = ${id} AND receipt_id = ${ik}`; if (rc[0]) { const f = await sql`SELECT score, max_score, status, submitted_at FROM attempts WHERE id = ${id}`; return json({ attempt: { id, score: f[0].score, max_score: f[0].max_score, status: f[0].status, submitted_at: f[0].submitted_at }, duplicate: true }); } }
         if (att[0].status !== 'in_progress') return err('Already submitted', 400);
-        const moduleRow = await sql`SELECT hm.source_session_id FROM class_assignments ca JOIN html_modules hm ON hm.id = ca.html_module_id WHERE ca.id = ${att[0].assignment_id}`;
+        const moduleRow = await sql`SELECT hm.source_bank_id, hm.source_session_id FROM class_assignments ca JOIN html_modules hm ON hm.id = ca.html_module_id WHERE ca.id = ${att[0].assignment_id}`;
         const sourceSessionId = moduleRow[0]?.source_session_id || null;
+        const sourceBankId = moduleRow[0]?.source_bank_id || null;
         let sourceQuestionMap = new Map<string, any>();
         let legacyQuestionMap = new Map<string, any>();
         if (sourceSessionId) {
-          const sourceQuestions = await sql`SELECT q.id, q.source_question_id, q.points, ak.answer FROM questions q JOIN learning_sessions ls ON ls.id = q.session_id LEFT JOIN question_answer_keys ak ON ak.question_id = q.id WHERE ls.source_session_id = ${sourceSessionId} ORDER BY q.source_question_id`;
-          const expected = await sql`SELECT total_questions FROM learning_sessions WHERE source_session_id = ${sourceSessionId} LIMIT 1`;
+          const sourceQuestions = await sql`SELECT q.id, q.source_question_id, q.points, ak.answer FROM questions q JOIN learning_sessions ls ON ls.id = q.session_id JOIN question_banks qb ON qb.id = ls.bank_id LEFT JOIN question_answer_keys ak ON ak.question_id = q.id WHERE ls.source_session_id = ${sourceSessionId} AND qb.source_bank_id = ${sourceBankId} ORDER BY q.source_question_id`;
+          const expected = await sql`SELECT ls.total_questions FROM learning_sessions ls JOIN question_banks qb ON qb.id = ls.bank_id WHERE ls.source_session_id = ${sourceSessionId} AND qb.source_bank_id = ${sourceBankId} LIMIT 1`;
           const expectedCount = Number(expected[0]?.total_questions || 0);
           if (!expectedCount || sourceQuestions.length !== expectedCount || sourceQuestions.some((q: any) => !q.answer)) return err('Bank soal atau answer key untuk sesi ini belum lengkap di server. Jawaban Anda tetap dapat disimpan sebagai laporan offline UNVERIFIED; nilai resmi belum tersedia.', 409, 'QUESTION_KEY_COVERAGE_INCOMPLETE');
           sourceQuestionMap = new Map(sourceQuestions.map((q: any) => [q.source_question_id, q]));
