@@ -30,17 +30,6 @@ function Nav() {
 // Helper functions
 function htmlPreviewUrl(id: string) { return '/api/html/' + id; }
 
-function htmlUserRow(u: any) {
-  return (
-    <tr key={u.id}>
-      <td>{u.email}</td>
-      <td><span className="badge">{u.role}</span></td>
-      <td>{u.is_active ? 'Aktif' : 'Nonaktif'}</td>
-      <td>{u.full_name || '-'}</td>
-    </tr>
-  );
-}
-
 function htmlClassRow(c: any) {
   return (
     <tr key={c.id}>
@@ -49,48 +38,6 @@ function htmlClassRow(c: any) {
       <td>{c.teacher_email || '-'}</td>
       <td>{c.student_count}</td>
       <td>{c.is_active ? 'Aktif' : 'Nonaktif'}</td>
-    </tr>
-  );
-}
-
-function htmlContentRow(m: any) {
-  return (
-    <tr key={m.id}>
-      <td>{m.title}</td>
-      <td>v{m.version}</td>
-      <td><span className="badge">{m.status}</span></td>
-      <td>{m.is_published ? 'Ya' : 'Tidak'}</td>
-      <td>{m.uploaded_by || '-'}</td>
-      <td><a href={htmlPreviewUrl(m.id)} target="_blank" rel="noopener noreferrer"><button className="secondary ghost" type="button">Preview</button></a></td>
-    </tr>
-  );
-}
-
-function htmlReviewRow(m: any, setStatus: (id: string, status: string) => void) {
-  return (
-    <tr key={m.id}>
-      <td>{m.title}</td>
-      <td>v{m.version}</td>
-      <td><span className="badge">{m.status}</span></td>
-      <td>
-        <button className="secondary" type="button" onClick={() => setStatus(m.id, 'APPROVED')}>Setujui</button>
-        <button className="secondary ghost" type="button" onClick={() => setStatus(m.id, 'ARCHIVED')}>Arsipkan</button>
-      </td>
-    </tr>
-  );
-}
-
-function htmlBankRow(m: any, assignToClass: (id: string) => void) {
-  return (
-    <tr key={m.id}>
-      <td>{m.title}</td>
-      <td>Week {m.week} · Sesi {m.session_no}</td>
-      <td>-</td>
-      <td><span className="badge">{m.status}</span></td>
-      <td>
-        <a href={htmlPreviewUrl(m.id)} target="_blank" rel="noopener noreferrer"><button className="secondary ghost" type="button">Preview</button></a>
-        <button className="secondary" type="button" onClick={() => assignToClass(m.id)}>Tambah ke Kelas</button>
-      </td>
     </tr>
   );
 }
@@ -110,31 +57,6 @@ function htmlLibraryRow(m: any) {
       <td>{m.is_published ? 'Ya' : 'Tidak'}</td>
       <td><a href={htmlPreviewUrl(m.id)} target="_blank" rel="noopener noreferrer"><button className="secondary ghost" type="button">Preview</button></a></td>
     </tr>
-  );
-}
-
-function reportRow(r: any) {
-  return (
-    <tr key={r.attempt_id}>
-      <td>{r.student_name}</td>
-      <td>{r.student_email}</td>
-      <td>{r.assignment_title}</td>
-      <td>{r.status}</td>
-      <td>{r.score}</td>
-      <td>{r.max_score}</td>
-      <td>{r.submitted_at}</td>
-    </tr>
-  );
-}
-
-function studentAssignmentRow(a: any) {
-  return (
-    <div key={a.id} className="card" style={{ marginBottom: '0.75rem' }}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'start' }}>
-        <div><div className="h1" style={{ fontSize: '1.05rem' }}>{a.title}</div><div className="muted small">{a.class_name} · v{a.version} · {a.html_status}</div>{a.due_at && <div className="muted small">Batas pengerjaan: {a.due_at}</div>}</div>
-        <button onClick={() => window.location.href = `/assessment/${a.id}`}>Buka Latihan</button>
-      </div>
-    </div>
   );
 }
 
@@ -234,99 +156,6 @@ function Login() {
   );
 }
 
-function AdminDashboard() {
-  const [stats, setStats] = useState<any>(null);
-  const [busy, setBusy] = useState(false);
-  useEffect(() => {
-    setBusy(true);
-    Promise.all([
-      getJSON('/api/users').catch(() => ({ users: [] })),
-      getJSON('/api/classes').catch(() => ({ classes: [] })),
-      getJSON('/api/html').catch(() => ({ html_modules: [] })),
-      getJSON('/api/attempts').catch(() => ({ attempts: [] }))
-    ]).then(([u, c, h, a]) => {
-      setStats({ users: u.users?.length || 0, classes: c.classes?.length || 0, html: h.html_modules?.length || 0, attempts: a.attempts?.length || 0 });
-    }).finally(() => setBusy(false));
-  }, []);
-  if (!stats) return <div className="page"><div className="spinner" /></div>;
-  return (
-    <div className="page">
-      <h1 className="h1">Dashboard Admin</h1>
-      <div className="row" style={{ gap: '0.75rem', marginBottom: '1rem' }}>
-        <div className="card" style={{ flex: 1 }}><div className="muted small">Pengguna</div><div className="h1" style={{ fontSize: '1.5rem' }}>{stats.users}</div></div>
-        <div className="card" style={{ flex: 1 }}><div className="muted small">Kelas</div><div className="h1" style={{ fontSize: '1.5rem' }}>{stats.classes}</div></div>
-        <div className="card" style={{ flex: 1 }}><div className="muted small">Materi HTML</div><div className="h1" style={{ fontSize: '1.5rem' }}>{stats.html}</div></div>
-        <div className="card" style={{ flex: 1 }}><div className="muted small">Attempts</div><div className="h1" style={{ fontSize: '1.5rem' }}>{stats.attempts}</div></div>
-      </div>
-    </div>
-  );
-}
-
-function AdminUsers() {
-  const [users, setUsers] = useState<any[]>([]);
-  const [busy, setBusy] = useState(false);
-  useEffect(() => { setBusy(true); getJSON('/api/users').then((d: any) => setUsers(d.users || [])).finally(() => setBusy(false)); }, []);
-  return (
-    <div className="page">
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.75rem' }}><h1 className="h1">Manajemen Pengguna</h1></div>
-      {busy && <div className="spinner" />}
-      <table className="table"><thead><tr><th>Email</th><th>Role</th><th>Status</th><th>Profil</th></tr></thead>
-        <tbody>{users.map((u: any) => htmlUserRow(u))}</tbody>
-      </table>
-    </div>
-  );
-}
-
-function AdminClasses() {
-  const [classes, setClasses] = useState<any[]>([]);
-  const [busy, setBusy] = useState(false);
-  useEffect(() => { setBusy(true); getJSON('/api/classes').then((d: any) => setClasses(d.classes || [])).finally(() => setBusy(false)); }, []);
-  return (
-    <div className="page">
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.75rem' }}><h1 className="h1">Manajemen Kelas</h1></div>
-      {busy && <div className="spinner" />}
-      <table className="table"><thead><tr><th>Nama</th><th>Deskripsi</th><th>Guru</th><th>Siswa</th><th>Status</th></tr></thead>
-        <tbody>{classes.map((c: any) => htmlClassRow2(c))}</tbody>
-      </table>
-    </div>
-  );
-}
-
-function AdminContent() {
-  const [htmls, setHtmls] = useState<any[]>([]);
-  const [busy, setBusy] = useState(false);
-  useEffect(() => { setBusy(true); getJSON('/api/html').then((d: any) => setHtmls(d.html_modules || [])).finally(() => setBusy(false)); }, []);
-  return (
-    <div className="page">
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.75rem' }}><h1 className="h1">Manajemen Konten HTML</h1></div>
-      {busy && <div className="spinner" />}
-      <table className="table"><thead><tr><th>Judul</th><th>Versi</th><th>Status</th><th>Terbitkan</th><th>Uploader</th><th>Aksi</th></tr></thead>
-        <tbody>{htmls.map((m: any) => htmlContentRow(m))}</tbody>
-      </table>
-    </div>
-  );
-}
-
-function AdminReview() {
-  const [items, setItems] = useState<any[]>([]);
-  const [busy, setBusy] = useState(false);
-  useEffect(() => { setBusy(true); getJSON('/api/html').then((d: any) => { const pending = (d.html_modules || []).filter((h: any) => h.status !== 'APPROVED'); setItems(pending); }).finally(() => setBusy(false)); }, []);
-  async function setStatus(id: string, status: string) { await postJSON(`/api/html/${id}`, { status }); setItems(items.filter((i: any) => i.id !== id)); }
-  return (
-    <div className="page">
-      <h1 className="h1">Review Konten</h1>
-      {busy && <div className="spinner" />}
-      {items.length === 0 && <p className="muted">Tidak ada konten yang perlu review.</p>}
-      <table className="table"><thead><tr><th>Judul</th><th>Versi</th><th>Status</th><th>Aksi</th></tr></thead>
-        <tbody>{items.map((m: any) => htmlReviewRow(m, setStatus))}</tbody>
-      </table>
-    </div>
-  );
-}
-
-function AdminAudit() { return <div className="page"><h1 className="h1">Audit Log</h1><div className="card"><p className="muted">Log aktivitas sistem akan ditampilkan di sini.</p></div></div>; }
-function AdminReports() { return <div className="page"><h1 className="h1">Laporan Platform</h1><div className="card"><p className="muted">Laporan keseluruhan platform akan ditampilkan di sini.</p></div></div>; }
-
 function TeacherClasses() {
   const [classes, setClasses] = useState<any[]>([]);
   const [busy, setBusy] = useState(false);
@@ -375,27 +204,6 @@ function ClassCreate() {
   );
 }
 
-function TeacherDashboard() {
-  const [classes, setClasses] = useState<any[]>([]);
-  const [busy, setBusy] = useState(false);
-  useEffect(() => { setBusy(true); getJSON('/api/classes').then((d: any) => setClasses(d.classes || [])).finally(() => setBusy(false)); }, []);
-  return (
-    <div className="page">
-      <h1 className="h1">Dashboard Guru</h1>
-      <div className="row" style={{ gap: '0.75rem', marginBottom: '1rem' }}>
-        <div className="card" style={{ flex: 1 }}><div className="muted small">Total Kelas</div><div className="h1" style={{ fontSize: '1.5rem' }}>{classes.length}</div></div>
-        <div className="card" style={{ flex: 1 }}><div className="muted small">Total Siswa</div><div className="h1" style={{ fontSize: '1.5rem' }}>{classes.reduce((sum, c) => sum + (c.student_count || 0), 0)}</div></div>
-      </div>
-      <h2 className="h1" style={{ fontSize: '1rem', marginBottom: '0.5rem' }}>Kelas Saya</h2>
-      {busy && <div className="spinner" />}
-      {classes.length === 0 && <p className="muted">Belum ada kelas.</p>}
-      <table className="table"><thead><tr><th>Nama Kelas</th><th>Deskripsi</th><th>Siswa</th><th>Aksi</th></tr></thead>
-        <tbody>{classes.map((c: any) => htmlClassRow2(c))}</tbody>
-      </table>
-    </div>
-  );
-}
-
 function htmlClassRow2(c: any) {
   return (
     <tr key={c.id}>
@@ -404,81 +212,6 @@ function htmlClassRow2(c: any) {
       <td>{c.student_count}</td>
       <td><Link to={`/teacher/classes/${c.id}`}><button className="secondary">Kelola</button></Link></td>
     </tr>
-  );
-}
-
-function StudentDashboard() {
-  const [classes, setClasses] = useState<any[]>([]);
-  const [assignments, setAssignments] = useState<any[]>([]);
-  const [busy, setBusy] = useState(false);
-  useEffect(() => { setBusy(true); Promise.all([getJSON('/api/classes').catch(() => ({ classes: [] })), getJSON('/api/assignments').catch(() => ({ assignments: [] }))]).then(([c, a]) => { setClasses(c.classes || []); setAssignments(a.assignments || []); }).finally(() => setBusy(false)); }, []);
-  function navigateTo(path: string) { window.location.href = path; }
-  return (
-    <div className="page">
-      <h1 className="h1">Dashboard Siswa</h1>
-      <div className="row" style={{ gap: '0.75rem', marginBottom: '1rem' }}>
-        <div className="card" style={{ flex: 1 }}><div className="muted small">Kelas</div><div className="h1" style={{ fontSize: '1.5rem' }}>{classes.length}</div></div>
-        <div className="card" style={{ flex: 1 }}><div className="muted small">Latihan</div><div className="h1" style={{ fontSize: '1.5rem' }}>{assignments.length}</div></div>
-      </div>
-      <h2 className="h1" style={{ fontSize: '1rem', marginBottom: '0.5rem' }}>Kelas Saya</h2>
-      {busy && <div className="spinner" />}
-      {classes.length === 0 && <p className="muted">Belum bergabung kelas.</p>}
-      <table className="table"><thead><tr><th>Nama Kelas</th><th>Deskripsi</th></tr></thead>
-        <tbody>{classes.map((c: any) => (<tr key={c.id}><td>{c.name}</td><td>{c.description || '-'}</td></tr>))}</tbody>
-      </table>
-      <h2 className="h1" style={{ fontSize: '1rem', marginTop: '1.5rem' }}>Latihan Saya</h2>
-      {assignments.length === 0 && <p className="muted">Belum ada latihan.</p>}
-      {assignments.map((a: any) => (
-        <div key={a.id} className="card" style={{ marginBottom: '0.75rem' }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'start' }}>
-            <div><div className="h1" style={{ fontSize: '1.05rem' }}>{a.title}</div><div className="muted small">{a.class_name} · {a.due_at ? 'Batas: ' + a.due_at : ''}</div></div>
-            <button onClick={() => navigateTo(`/assessment/${a.id}`)}>Buka</button>
-          </div>
-        </div>
-      ))}
-    </div>
-  );
-}
-
-function HtmlBank() {
-  const [items, setItems] = useState<any[]>([]);
-  const [busy, setBusy] = useState(false);
-  const [week, setWeek] = useState('');
-  const [session, setSession] = useState('');
-  const [status, setStatus] = useState('');
-  const [search, setSearch] = useState('');
-  useEffect(() => { setBusy(true); getJSON('/api/html').then((d: any) => setItems(d.html_modules || [])).finally(() => setBusy(false)); }, []);
-  const filtered = items.filter((m: any) => {
-    if (week && String(m.week) !== week) return false;
-    if (session && String(m.session_no) !== session) return false;
-    if (status && m.status !== status) return false;
-    if (search && !(m.title || '').toLowerCase().includes(search.toLowerCase())) return false;
-    return true;
-  });
-  async function assignToClass(moduleId: string) {
-    const classId = prompt('Masukkan ID kelas:');
-    if (!classId) return;
-    const title = prompt('Judul assignment:') || 'Tugas ' + (items.find((m: any) => m.id === moduleId)?.title || '');
-    const due_at = prompt('Batas pengerjaan (ISO format, kosongkan jika tidak ada):') || null;
-    try { await postJSON('/api/assignments', { class_id: classId, html_module_id: moduleId, title, due_at }); alert('Assignment berhasil dibuat!'); }
-    catch (e: any) { alert('Gagal: ' + (e.message || 'Terjadi kesalahan')); }
-  }
-  return (
-    <div className="page">
-      <h1 className="h1">Bank HTML</h1>
-      <div className="card" style={{ marginBottom: '1rem' }}>
-        <div className="row" style={{ gap: '0.5rem', flexWrap: 'wrap' }}>
-          <div className="field" style={{ flex: 1 }}><label>Minggu</label><input value={week} onChange={e => setWeek(e.target.value)} placeholder="Minggu" /></div>
-          <div className="field" style={{ flex: 1 }}><label>Sesi</label><input value={session} onChange={e => setSession(e.target.value)} placeholder="Sesi" /></div>
-          <div className="field" style={{ flex: 1 }}><label>Status</label><input value={status} onChange={e => setStatus(e.target.value)} placeholder="Status" /></div>
-          <div className="field" style={{ flex: 1 }}><label>Cari</label><input value={search} onChange={e => setSearch(e.target.value)} placeholder="Cari judul..." /></div>
-        </div>
-      </div>
-      {busy && <div className="spinner" />}
-      <table className="table"><thead><tr><th>Judul</th><th>Sesi</th><th>Jumlah Soal</th><th>Status</th><th>Aksi</th></tr></thead>
-        <tbody>{filtered.map((m: any) => htmlBankRow(m, assignToClass))}</tbody>
-      </table>
-    </div>
   );
 }
 
@@ -658,35 +391,6 @@ function HtmlPublish() {
   );
 }
 
-function Reports() {
-  const { isRole } = useAuth();
-  const [classId, setClassId] = useState('');
-  const [results, setResults] = useState<any[]>([]);
-  const [busy, setBusy] = useState(false);
-  if (isRole('STUDENT')) return <div className="page"><p className="muted">Fitur ini untuk guru.</p></div>;
-  async function load() {
-    if (!classId) return;
-    setBusy(true);
-    try { const d = await getJSON(`/api/reports?class_id=${classId}`); setResults(d.results || []); }
-    finally { setBusy(false); }
-  }
-  function exportCsv() { window.location.href = `/api/reports?class_id=${classId}&export=csv`; }
-  return (
-    <div className="page">
-      <h1 className="h1">Laporan Kelas</h1>
-      <div className="card">
-        <div className="field"><label>Pilih Kelas (masukkan ID kelas)</label><input value={classId} onChange={e => setClassId(e.target.value)} /></div>
-        <button type="button" onClick={load} disabled={!classId || busy}>{busy ? 'Memuat...' : 'Muat Hasil'}</button>
-        {results.length > 0 && <button type="button" onClick={exportCsv} className="secondary">Ekspor CSV</button>}
-      </div>
-      {busy && <div className="spinner" />}
-      <table className="table"><thead><tr><th>Siswa</th><th>Email</th><th>Assignment</th><th>Status</th><th>Skor</th><th>Maks</th><th>Dikirim</th></tr></thead>
-        <tbody>{results.map((r: any) => reportRow(r))}</tbody>
-      </table>
-    </div>
-  );
-}
-
 function StudentClasses() {
   const { isRole } = useAuth();
   const [classes, setClasses] = useState<any[]>([]);
@@ -734,46 +438,6 @@ function StudentAssignments() {
               </div>
             </div>
           ))}
-        </div>
-      )}
-    </div>
-  );
-}
-
-function AssessmentViewer() {
-  const { id } = useParams();
-  const [assignment, setAssignment] = useState<any>(null);
-  const [busy, setBusy] = useState(false);
-  const [status, setStatus] = useState<'idle'|'working'|'submitted'|'error'>('idle');
-  const [result, setResult] = useState<any>(null);
-  const navigate = useNavigate();
-  useEffect(() => { if (!id) return; setBusy(true); getJSON('/api/assignments').then((d: any) => setAssignment((d.assignments || []).find((a: any) => a.id === id))).finally(() => setBusy(false)); }, [id]);
-  async function loadHtml() { setBusy(true); try { await (await fetch(`/api/html/${assignment?.html_module_id}`)).text(); } catch { setStatus('error'); } finally { setBusy(false); } }
-  async function submitAnswers() {
-    setBusy(true);
-    try {
-      const created = await postJSON('/api/attempts', { assignment_id: id });
-      const attempt = created.attempt;
-      const submitted = await postJSON(`/api/attempts/${attempt.id}/submit`, { answers: [], idempotency_key: attempt.idempotency_key });
-      setResult(submitted.attempt); setStatus('submitted'); navigate(`/results/${attempt.id}`);
-    } catch { setStatus('error'); }
-    finally { setBusy(false); }
-  }
-  if (!assignment) return <div className="page">{busy ? <div className="spinner" /> : <p className="muted">Memuat...</p>}</div>;
-  return (
-    <div className="page">
-      <h1 className="h1">{assignment.title}</h1>
-      <div className="muted small">{assignment.class_name} · {assignment.html_title} (v{assignment.version})</div>
-      {assignment.due_at && <div className="muted small">Batas pengerjaan: {assignment.due_at}</div>}
-      <div className="card preview-wrap"><iframe className="viewer" src={`/api/html/${assignment.html_module_id}`} title="Latihan HTML" sandbox="allow-scripts allow-forms" /></div>
-      <div className="row" style={{ marginTop: '0.75rem', gap: '0.5rem' }}>
-        <button type="button" onClick={submitAnswers} disabled={busy || status === 'submitted'}>{status === 'submitted' ? 'Sudah Dikirim' : 'Kirim Jawaban'}</button>
-        {status === 'error' && <button className="secondary" type="button" onClick={loadHtml}>Coba Lagi</button>}
-      </div>
-      {result && (
-        <div className="card"><h2 className="h1" style={{ fontSize: '1.1rem', marginBottom: '0.4rem' }}>Hasil Pengerjaan</h2>
-          <p>Skor: <strong>{result.score}</strong> / {result.max_score}</p>
-          <p>Status: {result.status}</p><p>Dikirim: {result.submitted_at}</p>
         </div>
       )}
     </div>

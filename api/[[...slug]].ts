@@ -266,12 +266,39 @@ async function dispatch(req: Request): Promise<Response> {
       if (inv.expires_at && new Date(inv.expires_at) < new Date()) return err('Code expired', 403, 'EXPIRED_CODE');
       if (inv.max_uses !== null && inv.used_count >= inv.max_uses) return err('Limit reached', 403, 'LIMIT_REACHED');
       const cid = inv.class_id;
-      const m = await sql`SELECT 1 FROM class_memberships WHERE class_id = ${cid} AND user_id = ${s.sub}`;
-      if (m[0]) return err('Already member', 400);
-      await sql`BEGIN`;
-      await sql`INSERT INTO class_memberships (id, class_id, user_id, role, joined_at) VALUES (gen_random_uuid(), ${cid}, ${s.sub}, 'student', now())`;
-      await sql`UPDATE class_invites SET used_count = used_count + 1 WHERE id = ${inv.id}`;
-      await sql`COMMIT`;
+      const joined = await sql`
+        WITH eligible_invite AS (
+          SELECT ci.id, ci.class_id
+          FROM class_invites ci
+          WHERE ci.id = ${inv.id}
+            AND ci.is_active = true
+            AND (ci.expires_at IS NULL OR ci.expires_at > now())
+            AND (ci.max_uses IS NULL OR ci.used_count < ci.max_uses)
+            AND NOT EXISTS (SELECT 1 FROM class_memberships cm WHERE cm.class_id = ci.class_id AND cm.user_id = ${s.sub})
+          FOR UPDATE
+        ), inserted_membership AS (
+          INSERT INTO class_memberships (id, class_id, user_id, role, joined_at)
+          SELECT gen_random_uuid(), eligible_invite.class_id, ${s.sub}, 'student', now()
+          FROM eligible_invite
+          ON CONFLICT (class_id, user_id) DO NOTHING
+          RETURNING class_id
+        ), incremented_invite AS (
+          UPDATE class_invites ci SET used_count = used_count + 1
+          FROM inserted_membership im
+          WHERE ci.id = ${inv.id} AND ci.class_id = im.class_id
+          RETURNING ci.class_id
+        )
+        SELECT class_id FROM incremented_invite
+      `;
+      if (!joined[0]) {
+        const alreadyMember = await sql`SELECT 1 FROM class_memberships WHERE class_id = ${cid} AND user_id = ${s.sub}`;
+        if (alreadyMember[0]) return err('Already member', 400, 'ALREADY_MEMBER');
+        const latestInvite = await sql`SELECT is_active, max_uses, used_count, expires_at FROM class_invites WHERE id = ${inv.id}`;
+        if (!latestInvite[0] || !latestInvite[0].is_active) return err('Code inactive', 403, 'INACTIVE_CODE');
+        if (latestInvite[0].expires_at && new Date(latestInvite[0].expires_at) < new Date()) return err('Code expired', 403, 'EXPIRED_CODE');
+        if (latestInvite[0].max_uses !== null && latestInvite[0].used_count >= latestInvite[0].max_uses) return err('Limit reached', 403, 'LIMIT_REACHED');
+        return err('Undangan tidak dapat digunakan. Muat ulang dan coba kembali.', 409, 'INVITE_CLAIM_FAILED');
+      }
       return json({ ok: true, class: { id: cid, name: inv.class_name } }, 201);
     });
   }
@@ -558,7 +585,7 @@ async function dispatch(req: Request): Promise<Response> {
           }
         }
         let ts = 0, ms = sourceSessionId ? Array.from(sourceQuestionMap.values()).reduce((total: number, q: any) => total + Number(q.points || 0), 0) : 0; const ar: any[] = [];
-        await sql`BEGIN`;
+        const transactionQueries: any[] = [];
         try {
           for (const an of ans) {
             const qid = String(an.question_id || ''); const av = an.answer;
@@ -570,18 +597,18 @@ async function dispatch(req: Request): Promise<Response> {
             ic = deq(av, key) || (correctValue !== undefined && (deq(av, { correct_value: correctValue }) || (av && (av.selected === correctValue || av.correct_value === correctValue || av.value === correctValue)) || av === correctValue));
             if (ic) pe = Number(q.points || 0);
             ts += pe;
-            await sql`INSERT INTO attempt_answers (id, attempt_id, question_id, answer, is_correct, points_earned, created_at) VALUES (gen_random_uuid(), ${id}, ${q.id}, ${JSON.stringify(av)}, ${ic}, ${pe}, now())`;
+            transactionQueries.push(sql`INSERT INTO attempt_answers (id, attempt_id, question_id, answer, is_correct, points_earned, created_at) VALUES (gen_random_uuid(), ${id}, ${q.id}, ${JSON.stringify(av)}, ${ic}, ${pe}, now())`);
             ar.push({ question_id: qid, is_correct: ic, points_earned: pe });
           }
           const rid = ik || cryptoRandBytes(4).toString('hex');
           const vocabularyPayload = { vocabulary_responses: b?.vocabulary_responses || {}, vocabulary_self_assessment: b?.vocabulary_self_assessment || {}, source_session_id: sourceSessionId, assessment_status: 'FORMATIVE_NOT_GRADED' };
-          if (Object.keys(vocabularyPayload.vocabulary_responses).length || Object.keys(vocabularyPayload.vocabulary_self_assessment).length) await sql`INSERT INTO attempt_events (id, attempt_id, event_type, payload, created_at) VALUES (gen_random_uuid(), ${id}, 'VOCABULARY_RECALL_REPORT', ${JSON.stringify(vocabularyPayload)}, now())`;
+          if (Object.keys(vocabularyPayload.vocabulary_responses).length || Object.keys(vocabularyPayload.vocabulary_self_assessment).length) transactionQueries.push(sql`INSERT INTO attempt_events (id, attempt_id, event_type, payload, created_at) VALUES (gen_random_uuid(), ${id}, 'VOCABULARY_RECALL_REPORT', ${JSON.stringify(vocabularyPayload)}, now())`);
+          transactionQueries.push(sql`UPDATE attempts SET status = 'submitted', score = ${ts}, max_score = ${ms}, submitted_at = now() WHERE id = ${id}`);
+          transactionQueries.push(sql`INSERT INTO submission_receipts (id, attempt_id, receipt_id, submitted_at) VALUES (gen_random_uuid(), ${id}, ${rid}, now())`);
+          await sql.transaction(transactionQueries);
           await writeAudit(s, 'ATTEMPT_SUBMITTED', 'attempt', id, { source_session_id: sourceSessionId, score: ts, max_score: ms });
-          await sql`UPDATE attempts SET status = 'submitted', score = ${ts}, max_score = ${ms}, submitted_at = now() WHERE id = ${id}`;
-          await sql`INSERT INTO submission_receipts (id, attempt_id, receipt_id, submitted_at) VALUES (gen_random_uuid(), ${id}, ${rid}, now())`;
-          await sql`COMMIT`;
           return json({ attempt: { id, score: ts, max_score: ms, status: 'submitted', submitted_at: new Date().toISOString() }, answers: ar, receipt_id: rid });
-        } catch (e) { await sql`ROLLBACK`; throw e; }
+        } catch (e) { throw e; }
       });
     }
     return err('Method not allowed', 405);
