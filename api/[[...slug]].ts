@@ -512,25 +512,38 @@ async function dispatch(req: Request): Promise<Response> {
         if (att[0].student_id !== s.sub) return err('Forbidden', 403);
         if (ik) { const rc = await sql`SELECT * FROM submission_receipts WHERE attempt_id = ${id} AND receipt_id = ${ik}`; if (rc[0]) { const f = await sql`SELECT score, max_score, status, submitted_at FROM attempts WHERE id = ${id}`; return json({ attempt: { id, score: f[0].score, max_score: f[0].max_score, status: f[0].status, submitted_at: f[0].submitted_at }, duplicate: true }); } }
         if (att[0].status !== 'in_progress') return err('Already submitted', 400);
+        const moduleRow = await sql`SELECT hm.source_session_id FROM class_assignments ca JOIN html_modules hm ON hm.id = ca.html_module_id WHERE ca.id = ${att[0].assignment_id}`;
+        const sourceSessionId = moduleRow[0]?.source_session_id || null;
+        let sourceQuestionMap = new Map<string, any>();
+        if (sourceSessionId) {
+          const sourceQuestions = await sql`SELECT q.id, q.source_question_id, q.points, ak.answer FROM questions q JOIN learning_sessions ls ON ls.id = q.session_id LEFT JOIN question_answer_keys ak ON ak.question_id = q.id WHERE ls.source_session_id = ${sourceSessionId} ORDER BY q.source_question_id`;
+          const expected = await sql`SELECT total_questions FROM learning_sessions WHERE source_session_id = ${sourceSessionId} LIMIT 1`;
+          const expectedCount = Number(expected[0]?.total_questions || 0);
+          if (!expectedCount || sourceQuestions.length !== expectedCount || sourceQuestions.some((q: any) => !q.answer)) return err('Bank soal atau answer key untuk sesi ini belum lengkap di server. Jawaban Anda tetap dapat disimpan sebagai laporan offline UNVERIFIED; nilai resmi belum tersedia.', 409, 'QUESTION_KEY_COVERAGE_INCOMPLETE');
+          sourceQuestionMap = new Map(sourceQuestions.map((q: any) => [q.source_question_id, q]));
+          if (ans.some((item: any) => !sourceQuestionMap.has(String(item.question_id)))) return err('ID soal yang dikirim tidak cocok dengan bank soal sesi ini. Hasil belum dinilai.', 409, 'QUESTION_ID_MISMATCH');
+        }
         let ts = 0, ms = 0; const ar: any[] = [];
         await sql`BEGIN`;
         try {
           for (const an of ans) {
-            const qid = an.question_id; const av = an.answer;
-            const q = (await sql`SELECT id, points FROM questions WHERE id = ${qid}`)[0];
-            if (!q) continue;
+            const qid = String(an.question_id || ''); const av = an.answer;
+            const q = sourceSessionId ? sourceQuestionMap.get(qid) : (await sql`SELECT id, points, (SELECT answer FROM question_answer_keys WHERE question_id = questions.id) AS answer FROM questions WHERE id::text = ${qid} LIMIT 1`)[0];
+            if (!q || !q.answer) return err('Soal atau kunci jawaban belum tersedia. Hasil belum dinilai.', 409, 'QUESTION_KEY_MISSING');
             ms += Number(q.points || 0);
-            let ic = null, pe = 0;
-            const k = await sql`SELECT answer FROM question_answer_keys WHERE question_id = ${q.id}`;
-            if (k) {
-              ic = deq(av, k.answer) || deq(av, { correct_value: k.answer.correct_value }) || (av && (av.selected === k.answer.correct_value || av.correct_value === k.answer.correct_value || av.value === k.answer.correct_value)) || (av === k.answer.correct_value);
-              if (ic) pe = Number(q.points || 0);
-            }
+            let ic = false, pe = 0;
+            const key = q.answer;
+            const correctValue = key && typeof key === 'object' ? key.correct_value : key;
+            ic = deq(av, key) || (correctValue !== undefined && (deq(av, { correct_value: correctValue }) || (av && (av.selected === correctValue || av.correct_value === correctValue || av.value === correctValue)) || av === correctValue));
+            if (ic) pe = Number(q.points || 0);
             ts += pe;
             await sql`INSERT INTO attempt_answers (id, attempt_id, question_id, answer, is_correct, points_earned, created_at) VALUES (gen_random_uuid(), ${id}, ${qid}, ${JSON.stringify(av)}, ${ic}, ${pe}, now())`;
             ar.push({ question_id: qid, is_correct: ic, points_earned: pe });
           }
           const rid = ik || cryptoRandBytes(4).toString('hex');
+          const vocabularyPayload = { vocabulary_responses: b?.vocabulary_responses || {}, vocabulary_self_assessment: b?.vocabulary_self_assessment || {}, source_session_id: sourceSessionId, assessment_status: 'FORMATIVE_NOT_GRADED' };
+          if (Object.keys(vocabularyPayload.vocabulary_responses).length || Object.keys(vocabularyPayload.vocabulary_self_assessment).length) await sql`INSERT INTO attempt_events (id, attempt_id, event_type, payload, created_at) VALUES (gen_random_uuid(), ${id}, 'VOCABULARY_RECALL_REPORT', ${JSON.stringify(vocabularyPayload)}, now())`;
+          await writeAudit(s, 'ATTEMPT_SUBMITTED', 'attempt', id, { source_session_id: sourceSessionId, score: ts, max_score: ms });
           await sql`UPDATE attempts SET status = 'submitted', score = ${ts}, max_score = ${ms}, submitted_at = now() WHERE id = ${id}`;
           await sql`INSERT INTO submission_receipts (id, attempt_id, receipt_id, submitted_at) VALUES (gen_random_uuid(), ${id}, ${rid}, now())`;
           await sql`COMMIT`;
