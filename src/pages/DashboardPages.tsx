@@ -230,7 +230,7 @@ export function AdminReviewPage() {
   return <div className="page dashboard-page"><h1 className="h1">Review Konten</h1><p className="muted">Periksa isi akademik, keterkaitan stimulus, soal, dan kosakata sebelum menyetujui materi.</p>
     <ErrorNotice value={error} />{notice && <div className="alert success">{notice}</div>}
     <div className="card">{busy ? <div className="spinner" /> : items.length === 0 ? <Empty>Tidak ada konten yang menunggu review.</Empty> :
-      <TableWrap><thead><tr><th>Materi</th><th>Sesi</th><th>Status</th><th>Aksi</th></tr></thead><tbody>{items.map(m => <tr key={m.id}><td>{m.title}</td><td>{m.source_session_id || '—'}</td><td>{m.status}</td><td className="action-cell"><button disabled={savingId === m.id} onClick={() => void setStatus(m.id, 'APPROVED')}>Setujui</button><button className="secondary" disabled={savingId === m.id} onClick={() => void setStatus(m.id, 'ARCHIVED')}>Arsip</button></td></tr>)}</tbody></TableWrap>}</div>
+      <TableWrap><thead><tr><th>Materi</th><th>Sesi</th><th>Status</th><th>Aksi</th></tr></thead><tbody>{items.map(m => <tr key={m.id}><td>{m.title}</td><td>{m.source_session_id || '—'}</td><td>{m.status}</td><td className="action-cell"><button className="secondary" onClick={() => window.open('/api/html/' + m.id, '_blank', 'noopener,noreferrer')}>Pratinjau</button><button disabled={savingId === m.id} onClick={() => void setStatus(m.id, 'APPROVED')}>Setujui</button><button className="secondary" disabled={savingId === m.id} onClick={() => void setStatus(m.id, 'ARCHIVED')}>Arsip</button></td></tr>)}</tbody></TableWrap>}</div>
   </div>;
 }
 
