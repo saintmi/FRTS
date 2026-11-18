@@ -1,0 +1,42 @@
+{
+  "name": "frts-app",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "FRTS Learning Platform - React + TypeScript + Vite + Neon PostgreSQL",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc -b && vite build",
+    "lint": "eslint src --ext .ts,.tsx --max-warnings 0 || true",
+    "test": "vitest run",
+    "migrate": "node scripts/migrate.js",
+    "import": "node scripts/import-questions.js",
+    "seed": "node scripts/seed.js",
+    "vercel-build": "vite build"
+  },
+  "dependencies": {
+    "@neondatabase/serverless": "^1.2.1",
+    "bcryptjs": "^2.4.3",
+    "cookie": "^1.0.1",
+    "jsonwebtoken": "^9.0.2",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "react-router-dom": "^6.26.2",
+    "typescript-eslint": "^8.73.0",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@types/bcryptjs": "^2.4.6",
+    "@types/jsonwebtoken": "^9.0.6",
+    "@types/react": "^18.3.11",
+    "@types/react-dom": "^18.3.1",
+    "@vitejs/plugin-react": "^4.3.3",
+    "eslint": "^9.14.0",
+    "eslint-plugin-react-hooks": "^7.1.1",
+    "eslint-plugin-react-refresh": "^0.5.8",
+    "jsdom": "^25.0.1",
+    "typescript": "~5.6.3",
+    "vite": "^5.4.10",
+    "vitest": "^2.1.4"
+  }
+}
