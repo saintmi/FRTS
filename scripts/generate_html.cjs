@@ -226,8 +226,8 @@ function generateHTML(session) {
       const checksum = crypto.createHash('sha256').update(htmlContent).digest('hex');
 
       const moduleRes = await sql`
-        INSERT INTO html_modules (id, title, description, version, content, checksum, uploaded_by, status, is_published, created_at, updated_at)
-        VALUES (gen_random_uuid(), ${s.title}, ${s.title || null}, 1, ${htmlContent}, ${checksum}, ${adminId}, 'REVIEW_REQUIRED', false, now(), now())
+        INSERT INTO html_modules (id, title, description, source_session_id, version, content, checksum, uploaded_by, status, is_published, created_at, updated_at)
+        VALUES (gen_random_uuid(), ${s.title}, ${s.title || null}, ${s.source_session_id}, 1, ${htmlContent}, ${checksum}, ${adminId}, 'REVIEW_REQUIRED', false, now(), now())
         RETURNING id, title, version, checksum
       `;
 
