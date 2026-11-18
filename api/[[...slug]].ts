@@ -653,6 +653,48 @@ async function dispatch(req: Request): Promise<Response> {
   }
 
 
+  if (segs.length === 1 && segs[0] === 'vocabulary-progress' && method === 'GET') {
+    return await withAuth(req, async (r, s) => {
+      const classId = new URL(r.url).searchParams.get('class_id');
+      if (s.role === 'STUDENT') {
+        const reports = await sql`
+          SELECT ae.id AS report_id, ae.created_at, ae.payload,
+                 ca.title AS assignment_title, hm.title AS html_title,
+                 hm.source_bank_id, hm.source_bank_version, hm.source_session_id
+          FROM attempt_events ae
+          JOIN attempts a ON a.id = ae.attempt_id
+          JOIN class_assignments ca ON ca.id = a.assignment_id
+          JOIN html_modules hm ON hm.id = ca.html_module_id
+          WHERE ae.event_type = 'VOCABULARY_RECALL_REPORT' AND a.student_id = ${s.sub}
+          ORDER BY ae.created_at DESC LIMIT 50
+        `;
+        return json({ vocabulary_reports: reports });
+      }
+      if (s.role === 'TEACHER') {
+        if (!classId) return err('class_id required', 400, 'CLASS_ID_REQUIRED');
+        const ownsClass = await sql`SELECT id FROM classes WHERE id = ${classId} AND teacher_id = ${s.sub}`;
+        if (!ownsClass[0]) return err('Forbidden', 403);
+      }
+      const reports = await sql`
+        SELECT ae.id AS report_id, ae.created_at, ae.payload,
+               a.student_id, u.email AS student_email, up.full_name AS student_name,
+               c.name AS class_name, ca.class_id, ca.title AS assignment_title, hm.title AS html_title,
+               hm.source_bank_id, hm.source_bank_version, hm.source_session_id
+        FROM attempt_events ae
+        JOIN attempts a ON a.id = ae.attempt_id
+        JOIN class_assignments ca ON ca.id = a.assignment_id
+        JOIN classes c ON c.id = ca.class_id
+        JOIN users u ON u.id = a.student_id
+        LEFT JOIN user_profiles up ON up.user_id = u.id
+        JOIN html_modules hm ON hm.id = ca.html_module_id
+        WHERE ae.event_type = 'VOCABULARY_RECALL_REPORT'
+          AND (${s.role === 'ADMIN' && !classId} OR ca.class_id = ${classId})
+        ORDER BY ae.created_at DESC LIMIT 200
+      `;
+      return json({ vocabulary_reports: reports });
+    });
+  }
+
   if (segs.length === 1 && segs[0] === 'audit' && method === 'GET') {
     return await withAuth(req, async (r, s) => {
       const url = new URL(r.url);
