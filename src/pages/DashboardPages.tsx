@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import { getJSON, postJSON, postForm, putJSON } from '../lib/apiClient';
 
@@ -8,7 +8,7 @@ function ErrorNotice({ value }: { value: string }) {
   return value ? <div className="alert error" role="alert">{value}</div> : null;
 }
 
-function Empty({ children }: { children: React.ReactNode }) {
+function Empty({ children }: { children: ReactNode }) {
   return <p className="muted empty-state">{children}</p>;
 }
 
@@ -16,7 +16,7 @@ function Metric({ label, value, helper }: { label: string; value: string | numbe
   return <div className="card metric-card"><span className="muted small">{label}</span><strong>{value}</strong>{helper && <span className="muted small">{helper}</span>}</div>;
 }
 
-function TableWrap({ children }: { children: React.ReactNode }) {
+function TableWrap({ children }: { children: ReactNode }) {
   return <div className="table-wrap"><table className="table">{children}</table></div>;
 }
 
@@ -86,7 +86,7 @@ export function AdminUsersPage() {
     finally { setBusy(false); }
   }, []);
   useEffect(() => { void load(); }, [load]);
-  async function createUser(e: React.FormEvent) {
+  async function createUser(e: FormEvent) {
     e.preventDefault(); setSaving(true); setError(''); setNotice('');
     try {
       await postJSON('/api/users', form);
@@ -298,7 +298,7 @@ export function TeacherHtmlBankPage() {
   useEffect(() => { void load(); }, [load]);
   const filtered = useMemo(() => items.filter(m => (!week || String(m.week) === week) && (!status || m.status === status) && (!search || String(m.title || '').toLowerCase().includes(search.toLowerCase()))), [items,week,status,search]);
   function beginAssign(m: Row) { setModule(m); setTitle('Latihan ' + m.title); setClassId(classes[0]?.id || ''); setDueAt(''); setError(''); setNotice(''); }
-  async function submitAssignment(e: React.FormEvent) {
+  async function submitAssignment(e: FormEvent) {
     e.preventDefault(); if (!module) return;
     setSaving(true); setError(''); setNotice('');
     try {
