@@ -7,7 +7,7 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
-    "lint": "eslint src --ext .ts,.tsx --max-warnings 0 || true",
+    "lint": "eslint src --ext .ts,.tsx",
     "test": "vitest run",
     "migrate": "node scripts/migrate.js",
     "import": "node scripts/import-questions.js",
