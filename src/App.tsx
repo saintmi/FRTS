@@ -187,7 +187,7 @@ export default function App() {
           <Route path="/assessment/:id" element={<RoleGate roles={['STUDENT']}><AssessmentViewerPage /></RoleGate>} />
           <Route path="/results/:id" element={<RoleGate roles={['ADMIN','TEACHER','STUDENT']}><ResultPage /></RoleGate>} />
           <Route path="*" element={<Navigate to="/" replace />} />
-        </Routes>/Routes>
+        </Routes>
       </div>
     </AuthProvider>
   );
