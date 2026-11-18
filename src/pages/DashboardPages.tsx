@@ -315,18 +315,47 @@ export function TeacherHtmlBankPage() {
   </div>;
 }
 
+function vocabularySummary(payload: Row | null | undefined) {
+  const ratings = Object.values(payload?.vocabulary_self_assessment || {}).filter((v: any) => ['remembered', 'unsure', 'review'].includes(v));
+  const responses = Object.values(payload?.vocabulary_responses || {}).filter((v: any) => String(v || '').trim().length > 0);
+  return {
+    remembered: ratings.filter(v => v === 'remembered').length,
+    unsure: ratings.filter(v => v === 'unsure').length,
+    review: ratings.filter(v => v === 'review').length,
+    responses: responses.length
+  };
+}
+
 export function TeacherReportsPage() {
   const [classes, setClasses] = useState<Row[]>([]);
   const [classId, setClassId] = useState('');
   const [results, setResults] = useState<Row[]>([]);
+  const [vocabularyReports, setVocabularyReports] = useState<Row[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
-  useEffect(() => { getJSON('/api/classes').then(d => { setClasses(d.classes || []); setClassId(d.classes?.[0]?.id || ''); }).catch(e => setError(e.message || 'Daftar kelas gagal dimuat.')); }, []);
-  async function load() { if (!classId) return; setBusy(true); setError(''); try { const d = await getJSON('/api/reports?class_id=' + encodeURIComponent(classId)); setResults(d.results || []); } catch (e: any) { setError(e.message || 'Laporan gagal dimuat.'); } finally { setBusy(false); } }
+  useEffect(() => {
+    getJSON('/api/classes')
+      .then(d => { setClasses(d.classes || []); setClassId(d.classes?.[0]?.id || ''); })
+      .catch(e => setError(e.message || 'Daftar kelas gagal dimuat.'));
+  }, []);
+  async function load() {
+    if (!classId) return;
+    setBusy(true); setError('');
+    try {
+      const [d, v] = await Promise.all([
+        getJSON('/api/reports?class_id=' + encodeURIComponent(classId)),
+        getJSON('/api/vocabulary-progress?class_id=' + encodeURIComponent(classId))
+      ]);
+      setResults(d.results || []);
+      setVocabularyReports(v.vocabulary_reports || []);
+    } catch (e: any) { setError(e.message || 'Laporan gagal dimuat.'); }
+    finally { setBusy(false); }
+  }
   function exportCsv() { if (classId) window.location.href = '/api/reports?class_id=' + encodeURIComponent(classId) + '&export=csv'; }
   return <div className="page dashboard-page"><h1 className="h1">Laporan Kelas</h1><ErrorNotice value={error} />
-    <div className="card row align-end"><div className="field grow"><label>Pilih kelas</label><select value={classId} onChange={e => setClassId(e.target.value)}><option value="">Pilih kelas</option>{classes.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}</select></div><button onClick={load} disabled={!classId || busy}>Muat hasil</button><button className="secondary" onClick={exportCsv} disabled={!classId || results.length===0}>Ekspor CSV</button></div>
-    <div className="card">{busy ? <div className="spinner" /> : results.length===0 ? <Empty>Pilih kelas lalu muat hasil. Hasil akan tampil setelah siswa mengirim latihan.</Empty> : <TableWrap><thead><tr><th>Siswa</th><th>Email</th><th>Penugasan</th><th>Status</th><th>Skor</th><th>Maks</th><th>Dikirim</th></tr></thead><tbody>{results.map(r => <tr key={r.attempt_id}><td>{r.student_name || '—'}</td><td>{r.student_email}</td><td>{r.assignment_title}</td><td>{r.status}</td><td>{r.score ?? '—'}</td><td>{r.max_score ?? '—'}</td><td>{r.submitted_at || '—'}</td></tr>)}</tbody></TableWrap>}</div>
+    <div className="card row align-end"><div className="field grow"><label>Pilih kelas</label><select value={classId} onChange={e => setClassId(e.target.value)}><option value="">Pilih kelas</option>{classes.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}</select></div><button onClick={load} disabled={!classId || busy}>Muat hasil</button><button className="secondary" onClick={exportCsv} disabled={!classId || results.length === 0}>Ekspor CSV reading</button></div>
+    <div className="card"><h2 className="section-title">Reading Comprehension</h2>{busy ? <div className="spinner" /> : results.length === 0 ? <Empty>Pilih kelas lalu muat hasil. Hasil akan tampil setelah siswa mengirim latihan.</Empty> : <TableWrap><thead><tr><th>Siswa</th><th>Email</th><th>Penugasan</th><th>Status</th><th>Skor</th><th>Maks</th><th>Dikirim</th></tr></thead><tbody>{results.map(r => <tr key={r.attempt_id}><td>{r.student_name || '—'}</td><td>{r.student_email}</td><td>{r.assignment_title}</td><td>{r.status}</td><td>{r.score ?? '—'}</td><td>{r.max_score ?? '—'}</td><td>{r.submitted_at || '—'}</td></tr>)}</tbody></TableWrap>}</div>
+    <div className="card"><h2 className="section-title">Vocabulary Recall — formatif</h2><p className="muted small">Penanda “ingat”, “ragu”, dan “perlu diulang” adalah penilaian diri pada sesi tersebut, bukan status mastery permanen. Data ini tidak digabung ke skor reading.</p>{busy ? <div className="spinner" /> : vocabularyReports.length === 0 ? <Empty>Belum ada laporan kosakata pada kelas ini.</Empty> : <TableWrap><thead><tr><th>Siswa</th><th>Sesi</th><th>Penugasan</th><th>Jawaban diketik</th><th>Ingat</th><th>Ragu</th><th>Perlu diulang</th><th>Waktu</th></tr></thead><tbody>{vocabularyReports.map(v => { const stats = vocabularySummary(v.payload); return <tr key={v.report_id}><td>{v.student_name || v.student_email}</td><td>{v.source_session_id || '—'}</td><td>{v.assignment_title}</td><td>{stats.responses}</td><td>{stats.remembered}</td><td>{stats.unsure}</td><td>{stats.review}</td><td>{v.created_at}</td></tr>; })}</tbody></TableWrap>}</div>
   </div>;
 }
 
@@ -334,17 +363,33 @@ export function StudentDashboardPage() {
   const [classes, setClasses] = useState<Row[]>([]);
   const [assignments, setAssignments] = useState<Row[]>([]);
   const [attempts, setAttempts] = useState<Row[]>([]);
+  const [vocabularyReports, setVocabularyReports] = useState<Row[]>([]);
   const [busy, setBusy] = useState(true);
   const [error, setError] = useState('');
-  const load = useCallback(async () => { setBusy(true); setError(''); try { const [c,a,t] = await Promise.all([getJSON('/api/classes'),getJSON('/api/assignments'),getJSON('/api/attempts')]); setClasses(c.classes || []); setAssignments(a.assignments || []); setAttempts(t.attempts || []); } catch (e: any) { setError(e.message || 'Progres siswa gagal dimuat.'); } finally { setBusy(false); } }, []);
+  const load = useCallback(async () => {
+    setBusy(true); setError('');
+    try {
+      const [c, a, t, v] = await Promise.all([
+        getJSON('/api/classes'), getJSON('/api/assignments'),
+        getJSON('/api/attempts'), getJSON('/api/vocabulary-progress')
+      ]);
+      setClasses(c.classes || []);
+      setAssignments(a.assignments || []);
+      setAttempts(t.attempts || []);
+      setVocabularyReports(v.vocabulary_reports || []);
+    } catch (e: any) { setError(e.message || 'Progres siswa gagal dimuat.'); }
+    finally { setBusy(false); }
+  }, []);
   useEffect(() => { void load(); }, [load]);
   const completed = attempts.filter(a => a.status === 'submitted');
   return <div className="page dashboard-page"><div className="page-heading"><div><h1 className="h1">Dashboard Siswa</h1><p className="muted">Kelas, latihan yang harus dikerjakan, dan riwayat hasil belajar.</p></div><button className="secondary" onClick={load}>Muat ulang</button></div><ErrorNotice value={error} />
     <div className="dashboard-grid"><Metric label="Kelas diikuti" value={classes.length} /><Metric label="Latihan tersedia" value={assignments.length} /><Metric label="Latihan selesai" value={completed.length} /><Metric label="Sedang dikerjakan" value={attempts.filter(a => a.status === 'in_progress').length} /></div>
-    <div className="card"><h2 className="section-title">Latihan yang tersedia</h2>{busy ? <div className="spinner" /> : assignments.length === 0 ? <Empty>Belum ada latihan yang diberikan guru. Gabung kelas atau hubungi guru.</Empty> : <div className="class-grid">{assignments.slice(0,6).map(a => <div className="card mini-card" key={a.id}><strong>{a.title}</strong><p className="muted small">{a.class_name} · {a.html_title}</p><p className="muted small">{a.due_at ? 'Batas: ' + a.due_at : 'Tanpa batas waktu'}</p><Link to={'/assessment/' + a.id}>Buka latihan</Link></div>)}</div>}</div>
-    <div className="card"><h2 className="section-title">Riwayat pengerjaan</h2>{attempts.length===0 ? <Empty>Belum ada pengerjaan.</Empty> : <TableWrap><thead><tr><th>Latihan</th><th>Status</th><th>Skor reading</th><th>Waktu</th></tr></thead><tbody>{attempts.slice(0,10).map(a => <tr key={a.id}><td>{a.assignment_title}</td><td>{a.status}</td><td>{a.score ?? '—'} / {a.max_score ?? '—'}</td><td>{a.submitted_at || a.started_at}</td></tr>)}</tbody></TableWrap>}</div>
+    <div className="card"><h2 className="section-title">Latihan yang tersedia</h2>{busy ? <div className="spinner" /> : assignments.length === 0 ? <Empty>Belum ada latihan yang diberikan guru. Gabung kelas atau hubungi guru.</Empty> : <div className="class-grid">{assignments.slice(0, 6).map(a => <div className="card mini-card" key={a.id}><strong>{a.title}</strong><p className="muted small">{a.class_name} · {a.html_title}</p><p className="muted small">{a.due_at ? 'Batas: ' + a.due_at : 'Tanpa batas waktu'}</p><Link to={'/assessment/' + a.id}>Buka latihan</Link></div>)}</div>}</div>
+    <div className="card"><h2 className="section-title">Riwayat pengerjaan — Reading</h2>{attempts.length === 0 ? <Empty>Belum ada pengerjaan.</Empty> : <TableWrap><thead><tr><th>Latihan</th><th>Status</th><th>Skor reading</th><th>Waktu</th></tr></thead><tbody>{attempts.slice(0, 10).map(a => <tr key={a.id}><td>{a.assignment_title}</td><td>{a.status}</td><td>{a.score ?? '—'} / {a.max_score ?? '—'}</td><td>{a.submitted_at || a.started_at}</td></tr>)}</tbody></TableWrap>}</div>
+    <div className="card"><h2 className="section-title">Ingatan kosakata — formatif</h2><p className="muted small">Penanda “ingat”, “ragu”, dan “perlu diulang” menunjukkan refleksi pada sesi tersebut. Sistem tidak menetapkan mastery permanen hanya dari satu jawaban.</p>{vocabularyReports.length === 0 ? <Empty>Belum ada laporan kosakata yang tersinkron.</Empty> : <TableWrap><thead><tr><th>Sesi</th><th>Latihan</th><th>Jawaban diketik</th><th>Ingat</th><th>Ragu</th><th>Perlu diulang</th><th>Waktu</th></tr></thead><tbody>{vocabularyReports.slice(0, 15).map(v => { const stats = vocabularySummary(v.payload); return <tr key={v.report_id}><td>{v.source_session_id || '—'}</td><td>{v.assignment_title}</td><td>{stats.responses}</td><td>{stats.remembered}</td><td>{stats.unsure}</td><td>{stats.review}</td><td>{v.created_at}</td></tr>; })}</tbody></TableWrap>}</div>
   </div>;
 }
+
 
 export function AssessmentViewerPage() {
   const { id } = useParams();
