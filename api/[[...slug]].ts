@@ -377,7 +377,7 @@ async function dispatch(req: Request): Promise<Response> {
         if (s.role === 'STUDENT') {
           rows = await sql`SELECT a.id, a.assignment_id, a.status, a.score, a.max_score, a.started_at, a.submitted_at, ca.title AS assignment_title, c.id AS class_id FROM attempts a JOIN class_assignments ca ON ca.id = a.assignment_id JOIN classes c ON c.id = ca.class_id WHERE a.student_id = ${s.sub} ORDER BY a.started_at DESC`;
         } else if (s.role === 'TEACHER') {
-          rows = await sql`SELECT a.id, a.student_id, u.email AS student_email, up.full_name AS student_name, a.status, a.score, a.max_score, a.started_at, a.submitted_at, ca.title AS assignment_title FROM attempts a JOIN users u ON u.id = a.student_id LEFT JOIN user_profiles up ON u.id = u.id JOIN class_assignments ca ON ca.id = a.assignment_id JOIN classes c ON c.id = ca.class_id AND c.teacher_id = ${s.sub} ORDER BY a.started_at DESC`;
+          rows = await sql`SELECT a.id, a.student_id, u.email AS student_email, up.full_name AS student_name, a.status, a.score, a.max_score, a.started_at, a.submitted_at, ca.title AS assignment_title FROM attempts a JOIN users u ON u.id = a.student_id LEFT JOIN user_profiles up ON up.user_id = u.id JOIN class_assignments ca ON ca.id = a.assignment_id JOIN classes c ON c.id = ca.class_id AND c.teacher_id = ${s.sub} ORDER BY a.started_at DESC`;
         } else {
           rows = await sql`SELECT * FROM attempts ORDER BY started_at DESC`;
         }
@@ -468,7 +468,7 @@ async function dispatch(req: Request): Promise<Response> {
       const cesc = (v: any): string => { const s2 = v == null ? '' : String(v); if (/[",\n\r]/.test(s2)) return '"' + s2.replace(/"/g, '""') + '"'; return s2; };
       if (cid) {
         if (s.role === 'TEACHER') { const cls = await sql`SELECT teacher_id FROM classes WHERE id = ${cid}`; if (!cls[0] || cls[0].teacher_id !== s.sub) return err('Forbidden', 403); }
-        const rows = await sql`SELECT a.id AS attempt_id, a.student_id, u.email AS student_email, up.full_name AS student_name, ca.title AS assignment_title, a.status, a.score, a.max_score, a.submitted_at FROM attempts a JOIN users u ON u.id = a.student_id LEFT JOIN user_profiles up ON u.id = u.id JOIN class_assignments ca ON ca.id = a.assignment_id WHERE ca.class_id = ${cid} ORDER BY a.submitted_at DESC NULLS LAST`;
+        const rows = await sql`SELECT a.id AS attempt_id, a.student_id, u.email AS student_email, up.full_name AS student_name, ca.title AS assignment_title, a.status, a.score, a.max_score, a.submitted_at FROM attempts a JOIN users u ON u.id = a.student_id LEFT JOIN user_profiles up ON up.user_id = u.id JOIN class_assignments ca ON ca.id = a.assignment_id WHERE ca.class_id = ${cid} ORDER BY a.submitted_at DESC NULLS LAST`;
         if (csv) {
           const hd = ['attempt_id','student_email','student_name','assignment_title','status','score','max_score','submitted_at'];
           const lines = [hd.map(cesc).join(',')];
@@ -479,7 +479,7 @@ async function dispatch(req: Request): Promise<Response> {
       }
       if (aid) {
         if (s.role === 'TEACHER') { const asg = await sql`SELECT c.teacher_id FROM class_assignments ca JOIN classes c ON c.id=ca.class_id WHERE ca.id=${aid}`; if (!asg[0] || asg[0].teacher_id !== s.sub) return err('Forbidden', 403); }
-        const rows = await sql`SELECT a.id, u.email AS student_email, up.full_name AS student_name, a.status, a.score, a.max_score, a.submitted_at FROM attempts a JOIN users u ON u.id = a.student_id LEFT JOIN user_profiles up ON u.id = u.id WHERE a.assignment_id = ${aid} ORDER BY a.submitted_at DESC NULLS LAST`;
+        const rows = await sql`SELECT a.id, u.email AS student_email, up.full_name AS student_name, a.status, a.score, a.max_score, a.submitted_at FROM attempts a JOIN users u ON u.id = a.student_id LEFT JOIN user_profiles up ON up.user_id = u.id WHERE a.assignment_id = ${aid} ORDER BY a.submitted_at DESC NULLS LAST`;
         const tot = await sql`SELECT count(*) AS cnt FROM class_memberships WHERE class_id = (SELECT class_id FROM class_assignments WHERE id=${aid}) AND role='student'`;
         return json({ assignment_id: aid, total_students: Number(tot[0].cnt), submissions: rows.length, results: rows });
       }
