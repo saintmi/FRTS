@@ -1,10 +1,11 @@
--- Add canonical session provenance to stored HTML modules.
+-- Canonical source session provenance for stored HTML modules.
 -- Version: 003_html_module_source_session
 
 ALTER TABLE html_modules
   ADD COLUMN IF NOT EXISTS source_session_id TEXT;
 
-CREATE UNIQUE INDEX IF NOT EXISTS idx_html_modules_source_session_id
+-- Session IDs may repeat across different bank versions; keep this index non-unique.
+CREATE INDEX IF NOT EXISTS idx_html_modules_source_session_id
   ON html_modules(source_session_id)
   WHERE source_session_id IS NOT NULL;
 
