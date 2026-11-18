@@ -138,51 +138,74 @@ export function AdminContentPage() {
   const [items, setItems] = useState<Row[]>([]);
   const [busy, setBusy] = useState(true);
   const [importing, setImporting] = useState(false);
+  const [files, setFiles] = useState<File[]>([]);
   const [progress, setProgress] = useState('');
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
-  const load = useCallback(async () => { setBusy(true); try { const d = await getJSON('/api/html'); setItems(d.html_modules || []); } catch (e: any) { setError(e.message || 'Bank HTML gagal dimuat.'); } finally { setBusy(false); } }, []);
+  const load = useCallback(async () => {
+    setBusy(true); setError('');
+    try { const d = await getJSON('/api/html'); setItems(d.html_modules || []); }
+    catch (e: any) { setError(e.message || 'Bank HTML gagal dimuat.'); }
+    finally { setBusy(false); }
+  }, []);
   useEffect(() => { void load(); }, [load]);
   async function importBatchOne() {
-    setImporting(true); setError(''); setNotice('');
+    setError(''); setNotice('');
+    if (files.length !== 8) { setError('Pilih tepat 8 file HTML dari folder sessions pada paket Batch 1 v0.6.'); return; }
+    const prepared: Array<{ file: File; sessionId: string; title: string; week: string }> = [];
+    const seen = new Set<string>();
+    for (const file of files) {
+      const html = await file.text();
+      const sessionMatch = html.match(/"session_id"\s*:\s*"([^"]+)"/);
+      const weekMatch = html.match(/"week"\s*:\s*(\d+)/);
+      const titleMatch = html.match(/<title[^>]*>([\s\S]*?)<\/title>/i);
+      const sessionId = sessionMatch?.[1] || '';
+      if (!/^W[1-4]-ONLINE-0[12]$/.test(sessionId)) { setError('File ' + file.name + ' tidak memiliki session_id Batch 1 yang valid.'); return; }
+      if (seen.has(sessionId)) { setError('Ada file duplikat untuk sesi ' + sessionId + '.'); return; }
+      seen.add(sessionId);
+      prepared.push({ file, sessionId, title: (titleMatch?.[1] || file.name).replace(/&amp;/g,'&'), week: weekMatch?.[1] || '' });
+    }
+    if (prepared.length !== 8) { setError('Paket tidak lengkap. Batch 1 memerlukan delapan sesi.'); return; }
+    setImporting(true);
+    let imported = 0, skipped = 0, failed = 0;
+    const existingIds = new Set(items.map(m => m.source_session_id).filter(Boolean));
     try {
-      const base = '/content/frts/batch-01-v0.6/';
-      const manifestResponse = await fetch(base + 'manifest.json');
-      if (!manifestResponse.ok) throw new Error('Manifest Batch 1 tidak ditemukan di server statis.');
-      const manifest = await manifestResponse.json();
-      let imported = 0, skipped = 0;
-      for (const session of manifest.sessions || []) {
-        const existing = items.find(m => m.source_session_id === session.session_id);
-        if (existing) { skipped++; continue; }
-        setProgress('Mengimpor ' + session.session_id + '…');
-        const response = await fetch(base + session.html_path);
-        if (!response.ok) throw new Error('HTML sesi gagal dibaca: ' + session.session_id);
-        const html = await response.text();
-        const form = new FormData();
-        form.append('file', new Blob([html], { type: 'text/html' }), session.session_id + '.html');
-        form.append('title', session.title);
-        form.append('description', 'FRTS Batch 1 v0.6 · Week ' + session.week + ' · REVIEW_REQUIRED');
-        form.append('source_session_id', session.session_id);
-        await postForm('/api/html', form);
-        imported++;
+      for (const item of prepared) {
+        if (existingIds.has(item.sessionId)) { skipped++; continue; }
+        setProgress('Mengimpor ' + item.sessionId + '…');
+        try {
+          const form = new FormData();
+          form.append('file', item.file, item.file.name);
+          form.append('title', item.title);
+          form.append('description', 'FRTS Batch 1 v0.6 · Week ' + item.week + ' · generated vocabulary-first · REVIEW_REQUIRED');
+          form.append('source_session_id', item.sessionId);
+          await postForm('/api/html', form);
+          imported++;
+          existingIds.add(item.sessionId);
+        } catch (e: any) {
+          failed++;
+          setError((old => old ? old + '\n' + item.sessionId + ': ' + (e.message || 'gagal') : item.sessionId + ': ' + (e.message || 'gagal')) as any);
+        }
       }
-      setNotice(imported + ' sesi berhasil diimpor sebagai REVIEW_REQUIRED; ' + skipped + ' sesi dilewati karena sudah ada.');
+      setNotice(imported + ' sesi diimpor sebagai REVIEW_REQUIRED; ' + skipped + ' sudah ada; ' + failed + ' gagal.');
       await load();
-    } catch (e: any) { setError(e.message || 'Import Batch 1 gagal.'); }
-    finally { setImporting(false); setProgress(''); }
+    } finally { setImporting(false); setProgress(''); }
   }
   async function openHtml(id: string) { window.open('/api/html/' + id, '_blank', 'noopener,noreferrer'); }
   return <div className="page dashboard-page">
     <div className="page-heading"><div><h1 className="h1">Bank Konten HTML</h1><p className="muted">Pusat materi. Konten impor tetap menunggu review sebelum dapat dipublikasikan.</p></div><button className="secondary" onClick={load}>Muat ulang</button></div>
     <ErrorNotice value={error} />{notice && <div className="alert success">{notice}</div>}
-    <div className="card import-card"><div><h2 className="section-title">Batch 1 · Vocabulary-First v0.6</h2><p className="muted small">Impor delapan sesi Weeks 1–4 langsung ke Neon sebagai REVIEW_REQUIRED. Kunci jawaban tidak dikirim dari HTML siswa.</p></div><button onClick={importBatchOne} disabled={importing}>{importing ? 'Mengimpor…' : 'Impor Batch 1 v0.6'}</button>{progress && <p className="muted small">{progress}</p>}</div>
+    <div className="card import-card"><div><h2 className="section-title">Batch 1 · Vocabulary-First v0.6</h2><p className="muted small">Ekstrak paket ZIP terlebih dahulu, lalu pilih delapan file HTML dalam folder sessions/week-01 sampai week-04. Setiap file akan diimpor ke bank HTML sebagai REVIEW_REQUIRED. Kunci jawaban tidak dikirim dari HTML siswa.</p></div>
+      <div className="field"><label>Delapan file HTML Batch 1</label><input type="file" accept=".html,text/html" multiple onChange={e => setFiles(Array.from(e.target.files || []))} /></div>
+      <p className="muted small">{files.length} dari 8 file dipilih.</p>
+      <button onClick={importBatchOne} disabled={importing || files.length !== 8}>{importing ? 'Mengimpor…' : 'Impor Batch 1 v0.6'}</button>{progress && <p className="muted small">{progress}</p>}
+    </div>
     <div className="card">{busy ? <div className="spinner" /> : items.length === 0 ? <Empty>Bank HTML masih kosong.</Empty> :
       <TableWrap><thead><tr><th>Materi</th><th>Sesi sumber</th><th>Versi</th><th>Status</th><th>Publish</th><th></th></tr></thead><tbody>
         {items.map(m => <tr key={m.id}><td>{m.title}</td><td>{m.source_session_id || 'Upload umum'}</td><td>v{m.version}</td><td><span className="badge">{m.status}</span></td><td>{m.is_published ? 'Ya' : 'Tidak'}</td><td><button className="secondary" onClick={() => void openHtml(m.id)}>Pratinjau</button></td></tr>)}
       </tbody></TableWrap>}</div>
   </div>;
 }
-
 export function AdminReviewPage() {
   const [items, setItems] = useState<Row[]>([]);
   const [busy, setBusy] = useState(true);
