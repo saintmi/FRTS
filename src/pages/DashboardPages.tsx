@@ -180,6 +180,7 @@ export function AdminContentPage() {
           form.append('title', item.title);
           form.append('description', 'FRTS Batch 1 v0.6 · Week ' + item.week + ' · generated vocabulary-first · REVIEW_REQUIRED');
           form.append('source_bank_id', item.bankId);
+          form.append('source_bank_version', '0.4');
           form.append('source_session_id', item.sessionId);
           await postForm('/api/html', form);
           imported++;
