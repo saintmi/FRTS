@@ -1,44 +1,27 @@
 import { useState, useEffect } from 'react';
-import { Routes, Route, Link, useNavigate, useParams } from 'react-router-dom';
+import { Routes, Route, Link, Navigate, useNavigate, useParams } from 'react-router-dom';
 import { AuthProvider, useAuth } from './contexts/AuthContext';
 import { getJSON, postJSON, postForm } from './lib/apiClient';
+import { AdminDashboardPage, AdminUsersPage, AdminClassesPage, AdminContentPage, AdminReviewPage, AdminAuditPage, AdminReportsPage, TeacherDashboardPage, TeacherHtmlBankPage, TeacherReportsPage, StudentDashboardPage, AssessmentViewerPage } from './pages/DashboardPages';
 
 function Nav() {
-  const { user, logout, isAuthenticated, isRole } = useAuth();
-  if (!isAuthenticated()) return null;
-  const isAdmin = isRole('ADMIN');
-  const isTeacher = isRole('TEACHER') || isAdmin;
+  const { user, logout, loading } = useAuth();
+  if (loading || !user) return null;
   return (
     <nav className="nav">
       <span className="brand">FRTS</span>
-      {isAdmin ? (
-        <>
-          <Link to="/admin">Dashboard</Link>
-          <Link to="/admin/users">Pengguna</Link>
-          <Link to="/admin/classes">Kelas</Link>
-          <Link to="/admin/content">Konten</Link>
-          <Link to="/admin/review">Ulasan</Link>
-          <Link to="/admin/audit">Audit Log</Link>
-          <Link to="/admin/reports">Laporan</Link>
-        </>
-      ) : (
-        <>
-          <Link to="/teacher/classes">Kelas</Link>
-          <Link to="/teacher/html-library">Materi HTML</Link>
-          <Link to="/teacher/html-bank">Bank HTML</Link>
-          <Link to="/teacher/reports">Laporan</Link>
-        </>
-      )}
-      {!isAdmin && (
-        <>
-          <Link to="/student">Dashboard</Link>
-          <Link to="/student/classes">Kelas Saya</Link>
-          <Link to="/student/assignments">Latihan</Link>
-          <Link to="/student/progress">Progres</Link>
-        </>
-      )}
-      <div className="spacer"></div>
-      <span className="muted small">{user?.email}</span>
+      <div className="nav-links">
+        {user.role === 'ADMIN' && <>
+          <Link to="/admin">Dashboard</Link><Link to="/admin/users">Pengguna</Link><Link to="/admin/classes">Kelas</Link><Link to="/admin/content">Bank HTML</Link><Link to="/admin/review">Review</Link><Link to="/admin/audit">Audit Log</Link><Link to="/admin/reports">Laporan</Link>
+        </>}
+        {user.role === 'TEACHER' && <>
+          <Link to="/teacher">Dashboard</Link><Link to="/teacher/classes">Kelas</Link><Link to="/teacher/html-library">Materi</Link><Link to="/teacher/html-bank">Bank HTML</Link><Link to="/teacher/reports">Laporan</Link>
+        </>}
+        {user.role === 'STUDENT' && <>
+          <Link to="/student">Dashboard</Link><Link to="/student/classes">Kelas Saya</Link><Link to="/student/assignments">Latihan</Link><Link to="/student/progress">Progres</Link>
+        </>}
+      </div>
+      <div className="spacer"></div><span className="muted small">{user.email}</span>
       <button className="ghost" onClick={logout}>Keluar</button>
     </nav>
   );
@@ -165,6 +148,14 @@ function resultAnswerRow(a: any) {
   );
 }
 
+function RoleGate({ roles, children }: { roles: string[]; children: React.ReactNode }) {
+  const { user, loading } = useAuth();
+  if (loading) return <div className="page"><div className="spinner" /></div>;
+  if (!user) return <Navigate to="/login" replace />;
+  if (!roles.includes(user.role)) return <div className="page"><div className="alert error">Anda tidak memiliki akses ke halaman ini.</div><Link to="/">Kembali ke dashboard</Link></div>;
+  return <>{children}</>;
+}
+
 export default function App() {
   return (
     <AuthProvider>
@@ -173,34 +164,38 @@ export default function App() {
         <Routes>
           <Route path="/login" element={<Login />} />
           <Route path="/" element={<Home />} />
-          <Route path="/admin" element={<AdminDashboard />} />
-          <Route path="/admin/users" element={<AdminUsers />} />
-          <Route path="/admin/classes" element={<AdminClasses />} />
-          <Route path="/admin/content" element={<AdminContent />} />
-          <Route path="/admin/review" element={<AdminReview />} />
-          <Route path="/admin/audit" element={<AdminAudit />} />
-          <Route path="/admin/reports" element={<AdminReports />} />
-          <Route path="/teacher/classes" element={<TeacherClasses />} />
-          <Route path="/teacher/classes/:id" element={<ClassDetail />} />
-          <Route path="/teacher/html-library" element={<HtmlLibrary />} />
-          <Route path="/teacher/html-bank" element={<HtmlBank />} />
-          <Route path="/teacher/html/upload" element={<HtmlUpload />} />
-          <Route path="/teacher/html/:id/publish" element={<HtmlPublish />} />
-          <Route path="/teacher/reports" element={<Reports />} />
-          <Route path="/student" element={<StudentDashboard />} />
-          <Route path="/student/classes" element={<StudentClasses />} />
-          <Route path="/student/assignments" element={<StudentAssignments />} />
-          <Route path="/student/progress" element={<StudentProgress />} />
-          <Route path="/assessment/:id" element={<AssessmentViewer />} />
-          <Route path="/results/:id" element={<ResultPage />} />
-        </Routes>
+          <Route path="/admin" element={<RoleGate roles={['ADMIN']}><AdminDashboardPage /></RoleGate>} />
+          <Route path="/admin/users" element={<RoleGate roles={['ADMIN']}><AdminUsersPage /></RoleGate>} />
+          <Route path="/admin/classes" element={<RoleGate roles={['ADMIN']}><AdminClassesPage /></RoleGate>} />
+          <Route path="/admin/content" element={<RoleGate roles={['ADMIN']}><AdminContentPage /></RoleGate>} />
+          <Route path="/admin/review" element={<RoleGate roles={['ADMIN']}><AdminReviewPage /></RoleGate>} />
+          <Route path="/admin/audit" element={<RoleGate roles={['ADMIN']}><AdminAuditPage /></RoleGate>} />
+          <Route path="/admin/reports" element={<RoleGate roles={['ADMIN']}><AdminReportsPage /></RoleGate>} />
+          <Route path="/teacher" element={<RoleGate roles={['TEACHER','ADMIN']}><TeacherDashboardPage /></RoleGate>} />
+          <Route path="/teacher/classes" element={<RoleGate roles={['TEACHER','ADMIN']}><TeacherClasses /></RoleGate>} />
+          <Route path="/teacher/classes/new" element={<RoleGate roles={['TEACHER','ADMIN']}><ClassCreate /></RoleGate>} />
+          <Route path="/teacher/classes/:id" element={<RoleGate roles={['TEACHER','ADMIN','STUDENT']}><ClassDetail /></RoleGate>} />
+          <Route path="/teacher/html-library" element={<RoleGate roles={['TEACHER','ADMIN']}><HtmlLibrary /></RoleGate>} />
+          <Route path="/teacher/html-bank" element={<RoleGate roles={['TEACHER','ADMIN']}><TeacherHtmlBankPage /></RoleGate>} />
+          <Route path="/teacher/html/upload" element={<RoleGate roles={['TEACHER','ADMIN']}><HtmlUpload /></RoleGate>} />
+          <Route path="/teacher/html/:id/publish" element={<RoleGate roles={['ADMIN','TEACHER']}><HtmlPublish /></RoleGate>} />
+          <Route path="/teacher/reports" element={<RoleGate roles={['TEACHER','ADMIN']}><TeacherReportsPage /></RoleGate>} />
+          <Route path="/student" element={<RoleGate roles={['STUDENT']}><StudentDashboardPage /></RoleGate>} />
+          <Route path="/student/classes" element={<RoleGate roles={['STUDENT']}><StudentClasses /></RoleGate>} />
+          <Route path="/student/assignments" element={<RoleGate roles={['STUDENT']}><StudentAssignments /></RoleGate>} />
+          <Route path="/student/progress" element={<RoleGate roles={['STUDENT']}><StudentProgress /></RoleGate>} />
+          <Route path="/assessment/:id" element={<RoleGate roles={['STUDENT']}><AssessmentViewerPage /></RoleGate>} />
+          <Route path="/results/:id" element={<RoleGate roles={['ADMIN','TEACHER','STUDENT']}><ResultPage /></RoleGate>} />
+          <Route path="*" element={<Navigate to="/" replace />} />
+        </Routes>/Routes>
       </div>
     </AuthProvider>
   );
 }
 
 function Home() {
-  const { user, isRole, isAuthenticated } = useAuth();
+  const { loading, isRole, isAuthenticated } = useAuth();
+  if (loading) return <div className="page"><div className="spinner" /></div>;
   if (!isAuthenticated()) return <Login />;
   if (isRole('ADMIN')) return <AdminDashboard />;
   if (isRole('TEACHER')) return <TeacherDashboard />;
@@ -234,7 +229,6 @@ function Login() {
           <div className="field"><label>Password</label><input type="password" value={password} onChange={e => setPassword(e.target.value)} required /></div>
           <button type="submit" disabled={busy}>{busy ? 'Memproses...' : 'Masuk'}</button>
         </form>
-        <p className="muted small center">Akun demo: admin@frts.local / teacher@frts.local / student@frts.local</p>
       </div>
     </div>
   );
@@ -339,7 +333,7 @@ function TeacherClasses() {
   useEffect(() => { setBusy(true); getJSON('/api/classes').then((d: any) => setClasses(d.classes || [])).finally(() => setBusy(false)); }, []);
   return (
     <div className="page">
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.75rem' }}><h1 className="h1">Kelas Saya</h1></div>
+      <div className="page-heading"><div><h1 className="h1">Kelas Saya</h1><p className="muted">Kelola kelas, anggota, dan kode undangan.</p></div><Link to="/teacher/classes/new"><button>+ Buat kelas</button></Link></div>
       {busy && <div className="spinner" />}
       {classes.length === 0 && <p className="muted">Belum ada kelas.</p>}
       <table className="table"><thead><tr><th>Nama Kelas</th><th>Deskripsi</th><th>Siswa</th><th>Aksi</th></tr></thead>
@@ -530,14 +524,12 @@ function ClassDetail() {
   useEffect(() => {
     if (!id) return;
     setBusy(true);
-    Promise.all([getJSON(`/api/classes/${id}`), getJSON(`/api/classes/${id}/invite?format=json`)]).catch(() => {})
-      .then(([a, b]: any) => { if (a) setCls(a.class); if (b && b.invite) setInvite(b.invite); setMembers(a.members || []); })
-      .finally(() => setBusy(false));
+    getJSON(`/api/classes/${id}`).then((a: any) => { setCls(a.class); setInvite(a.invite || null); setMembers(a.members || []); }).catch((e: any) => setErr(e.message || 'Detail kelas gagal dimuat.')).finally(() => setBusy(false));
   }, [id]);
   async function genInvite() {
     setErr(''); setBusy(true);
     try {
-      const d = await postJSON(`/api/classes/${id}/invite`, { code: newCode || undefined, max_uses: newMaxUses ? Number(newMaxUses) : undefined, expires_in_days: newExpiry ? Number(newExpiry) : undefined });
+      const d = await postJSON(`/api/classes/${id}`, { action: 'invite', code: newCode || undefined, max_uses: newMaxUses ? Number(newMaxUses) : undefined, expires_in_days: newExpiry ? Number(newExpiry) : undefined });
       setInvite(d.invite); setNewCode(''); setNewMaxUses(''); setNewExpiry('');
     } catch (err: any) { setErr(err.message || 'Gagal buat kode undangan'); }
     finally { setBusy(false); }
@@ -649,7 +641,7 @@ function HtmlPublish() {
   if (isRole('STUDENT')) return <div className="page"><p className="muted">Fitur ini untuk guru.</p></div>;
   async function togglePublish() {
     setBusy(true);
-    try { const next = !meta?.is_published; await postJSON(`/api/html/${id}/publish`, { is_published: next }); setMeta((prev: any) => ({ ...prev, is_published: next })); } catch { void null; }
+    try { const next = !meta?.is_published; await postJSON(`/api/html/${id}`, { is_published: next }); setMeta((prev: any) => ({ ...prev, is_published: next })); } catch { void null; }
     finally { setBusy(false); }
   }
   if (!meta) return <div className="page">{busy ? <div className="spinner" /> : <p className="muted">Memuat...</p>}</div>;
