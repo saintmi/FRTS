@@ -30,3 +30,10 @@ yarn-debug.log*
 pnpm-debug.log*
 .DS_Store
 Thumbs.db
+
+# Private source packages: may contain teacher-only answer keys
+content/imports/*
+!content/imports/README.md
+**/*Teacher_Answer_Payload*.json
+**/*Teacher_Answer_Guide*.md
+**/*Teacher_Answer*.json
