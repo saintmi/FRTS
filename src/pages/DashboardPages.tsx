@@ -361,7 +361,7 @@ export function AssessmentViewerPage() {
       const message = event.data;
       if (!message || message.type !== 'FRTS_ATTEMPT_REPORT' || !message.payload || lockRef.current) return;
       const report = message.payload as Row;
-      if (!assignment || report.session_id !== assignment.source_session_id) { setError('ID sesi pada laporan tidak cocok dengan penugasan ini.'); return; }
+      if (!assignment || report.session_id !== assignment.source_session_id || report.bank_id !== assignment.source_bank_id) { setError('ID bank atau sesi pada laporan tidak cocok dengan penugasan ini.'); return; }
       const answerMap = report.answers && typeof report.answers === 'object' ? report.answers : {};
       if (Object.keys(answerMap).length === 0) { setError('Belum ada jawaban reading yang dapat dikirim.'); return; }
       lockRef.current = true; setError(''); setStatus('Mengirim jawaban dan memeriksa kunci…');
