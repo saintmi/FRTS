@@ -24,6 +24,36 @@ function setSess(t: string): string { return serialize(COOKIE_NAME, t, { httpOnl
 function clearSess(): string { return serialize(COOKIE_NAME, '', { httpOnly: true, secure: process.env.NODE_ENV === 'production', sameSite: 'lax', path: '/', maxAge: 0 }); }
 function json(d: any, s = 200, i?: ResponseInit) { return new Response(JSON.stringify(d), { status: s, headers: { 'Content-Type': 'application/json', ...(i?.headers || {}) } }); }
 function err(m: string, s = 400, c?: string) { return json({ error: m, code: c }, s); }
+async function validateCanonicalHtmlModule(module: any): Promise<{ ok: boolean; code?: string; message?: string }> {
+  if (!module.source_bank_id || !module.source_bank_version || !module.source_session_id) return { ok: false, code: 'SOURCE_IDENTITY_INCOMPLETE', message: 'Identitas bank/versi/sesi belum lengkap.' };
+  const match = String(module.content || '').match(/<script[^>]*id=["']moduleData["'][^>]*>([\\s\\S]*?)<\\/script>/i);
+  if (!match) return { ok: false, code: 'MODULE_DATA_MISSING', message: 'Data modul HTML tidak ditemukan.' };
+  let data: any;
+  try { data = JSON.parse(match[1]); } catch { return { ok: false, code: 'MODULE_DATA_INVALID', message: 'Metadata HTML bukan JSON valid.' }; }
+  if (data.bank_id !== module.source_bank_id || data.bank_version !== module.source_bank_version || data.session_id !== module.source_session_id) return { ok: false, code: 'SOURCE_METADATA_MISMATCH', message: 'Identitas sumber di HTML tidak sama dengan metadata server.' };
+
+  const sessions = await sql`SELECT ls.id, ls.total_questions FROM learning_sessions ls JOIN question_banks qb ON qb.id = ls.bank_id WHERE qb.source_bank_id = ${module.source_bank_id} AND qb.package_version = ${module.source_bank_version} AND ls.source_session_id = ${module.source_session_id} LIMIT 1`;
+  if (!sessions[0]) return { ok: false, code: 'CANONICAL_SESSION_NOT_FOUND', message: 'Sesi bank/versi ini belum diimpor ke Neon.' };
+  const qRows = await sql`SELECT q.source_question_id, st.source_stimulus_id, ak.question_id AS keyed FROM questions q JOIN learning_sessions ls ON ls.id = q.session_id JOIN question_banks qb ON qb.id = ls.bank_id LEFT JOIN stimuli st ON st.id = q.stimulus_id LEFT JOIN question_answer_keys ak ON ak.question_id = q.id WHERE qb.source_bank_id = ${module.source_bank_id} AND qb.package_version = ${module.source_bank_version} AND ls.source_session_id = ${module.source_session_id} ORDER BY q.source_question_id`;
+  const stRows = await sql`SELECT source_stimulus_id, content FROM stimuli WHERE session_id = ${sessions[0].id} ORDER BY source_stimulus_id`;
+  const htmlQs = Array.isArray(data.questions) ? data.questions : [];
+  const htmlSts = Array.isArray(data.stimuli) ? data.stimuli : [];
+  const sameSet = (a: string[], b: string[]) => a.length === b.length && new Set(a).size === a.length && new Set(b).size === b.length && a.every(x => new Set(b).has(x));
+  const sourceQ = qRows.map((q: any) => String(q.source_question_id));
+  const htmlQ = htmlQs.map((q: any) => String(q.id || ''));
+  if (!sessions[0].total_questions || qRows.length !== Number(sessions[0].total_questions) || qRows.some((q: any) => !q.keyed)) return { ok: false, code: 'QUESTION_KEY_COVERAGE_INCOMPLETE', message: 'Jumlah soal atau answer key server belum lengkap.' };
+  if (!sameSet(sourceQ, htmlQ)) return { ok: false, code: 'QUESTION_SET_MISMATCH', message: 'ID soal HTML tidak cocok persis dengan bank soal kanonis.' };
+  const sourceSt = stRows.map((st: any) => String(st.source_stimulus_id));
+  const htmlSt = htmlSts.map((st: any) => String(st.id || ''));
+  if (!sameSet(sourceSt, htmlSt)) return { ok: false, code: 'STIMULUS_SET_MISMATCH', message: 'ID stimulus HTML tidak cocok persis dengan bank kanonis.' };
+  const htmlQMap = new Map(htmlQs.map((q: any) => [String(q.id), q]));
+  for (const q of qRows) { const item: any = htmlQMap.get(String(q.source_question_id)); if ((q.source_stimulus_id ? String(q.source_stimulus_id) : '') !== (item?.stimulus_id ? String(item.stimulus_id) : '')) return { ok: false, code: 'QUESTION_STIMULUS_LINK_MISMATCH', message: 'Relasi stimulus untuk soal ' + q.source_question_id + ' tidak cocok.' }; }
+  const htmlStMap = new Map(htmlSts.map((st: any) => [String(st.id), st]));
+  const norm = (v: any) => String(v || '').replace(/\\s+/g, ' ').trim();
+  for (const st of stRows) { const item: any = htmlStMap.get(String(st.source_stimulus_id)); if (!item || norm(item.text) !== norm(st.content)) return { ok: false, code: 'STIMULUS_CONTENT_MISMATCH', message: 'Teks stimulus ' + st.source_stimulus_id + ' tidak cocok.' }; }
+  return { ok: true };
+}
+
 async function writeAudit(session: Session, action: string, entityType: string, entityId: string | null, metadata: any = {}) {
   try { await sql`INSERT INTO audit_logs (id, actor_id, actor_email, action, entity_type, entity_id, metadata, created_at) VALUES (gen_random_uuid(), ${session.sub}, ${session.email}, ${action}, ${entityType}, ${entityId}, ${JSON.stringify(metadata)}, now())`; }
   catch { /* audit failure must not interrupt core workflows */ }
@@ -441,6 +471,10 @@ async function dispatch(req: Request): Promise<Response> {
         if (status && !['DRAFT', 'REVIEW_REQUIRED', 'APPROVED', 'ARCHIVED'].includes(status)) return err('Status konten tidak valid', 400);
         if (status && s.role !== 'ADMIN') return err('Hanya admin yang dapat mengubah status review', 403);
         if (title === null && b?.description === undefined && status === null) return err('No fields', 400);
+        if (status === 'APPROVED' && mod.source_session_id) {
+          const validation = await validateCanonicalHtmlModule(mod);
+          if (!validation.ok) return err(validation.message || 'Materi belum lolos validasi sumber kanonis.', 409, validation.code || 'CANONICAL_VALIDATION_FAILED');
+        }
         const rows = await sql`UPDATE html_modules SET title = COALESCE(${title}, title), description = CASE WHEN ${b?.description !== undefined} THEN ${description} ELSE description END, status = COALESCE(${status}, status), updated_at = now() WHERE id = ${id} RETURNING id, title, description, version, status, is_published, updated_at`;
         await writeAudit(s, status ? 'HTML_STATUS_UPDATED' : 'HTML_MODULE_UPDATED', 'html_module', id, { status });
         return json({ html_module: rows[0] });
