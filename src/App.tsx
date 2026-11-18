@@ -194,12 +194,12 @@ export default function App() {
 }
 
 function Home() {
-  const { loading, isRole, isAuthenticated } = useAuth();
+  const { loading, user, isAuthenticated } = useAuth();
   if (loading) return <div className="page"><div className="spinner" /></div>;
-  if (!isAuthenticated()) return <Login />;
-  if (isRole('ADMIN')) return <AdminDashboard />;
-  if (isRole('TEACHER')) return <TeacherDashboard />;
-  return <StudentDashboard />;
+  if (!isAuthenticated() || !user) return <Login />;
+  if (user.role === 'ADMIN') return <AdminDashboardPage />;
+  if (user.role === 'TEACHER') return <TeacherDashboardPage />;
+  return <StudentDashboardPage />;
 }
 
 function Login() {
