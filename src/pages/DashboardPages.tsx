@@ -65,7 +65,7 @@ export function AdminDashboardPage() {
         <h2 className="section-title">Percobaan terbaru</h2>
         {(data?.recent_attempts || []).length === 0 ? <Empty>Belum ada aktivitas pengerjaan.</Empty> :
           <TableWrap><thead><tr><th>Siswa</th><th>Kelas</th><th>Latihan</th><th>Status</th><th>Skor</th><th>Dikirim</th></tr></thead><tbody>
-            {(data.recent_attempts || []).map((a: Row) => <tr key={a.attempt_id}><td>{a.student_name || a.student_email}</td><td>{a.class_name}</td><td>{a.assignment_title}</td><td>{a.status}</td><td>{a.score ?? '—'} / {a.max_score ?? '—'}</td><td>{a.submitted_at || 'Belum dikirim'}</td></tr>)}
+            {(data?.recent_attempts || []).map((a: Row) => <tr key={a.attempt_id}><td>{a.student_name || a.student_email}</td><td>{a.class_name}</td><td>{a.assignment_title}</td><td>{a.status}</td><td>{a.score ?? '—'} / {a.max_score ?? '—'}</td><td>{a.submitted_at || 'Belum dikirim'}</td></tr>)}
           </tbody></TableWrap>}
       </div>
     </>}

@@ -9,6 +9,7 @@ function gdu(): string { if (databaseUrl) return databaseUrl; const u = process.
 let client: any = null;
 function c(): any { if (!client) client = neon(gdu()); return client; }
 export function sql(strings: TemplateStringsArray, ...values: any[]): any { return c()(strings, ...values); }
+async function sqlTransaction(queries: any[]): Promise<any[]> { return c().transaction(queries); }
 
 const AUTH_SECRET = process.env.AUTH_SECRET;
 const COOKIE_NAME = 'frts_session';
@@ -608,7 +609,7 @@ async function dispatch(req: Request): Promise<Response> {
           if (Object.keys(vocabularyPayload.vocabulary_responses).length || Object.keys(vocabularyPayload.vocabulary_self_assessment).length) transactionQueries.push(sql`INSERT INTO attempt_events (id, attempt_id, event_type, payload, created_at) VALUES (gen_random_uuid(), ${id}, 'VOCABULARY_RECALL_REPORT', ${JSON.stringify(vocabularyPayload)}, now())`);
           transactionQueries.push(sql`UPDATE attempts SET status = 'submitted', score = ${ts}, max_score = ${ms}, submitted_at = now() WHERE id = ${id}`);
           transactionQueries.push(sql`INSERT INTO submission_receipts (id, attempt_id, receipt_id, submitted_at) VALUES (gen_random_uuid(), ${id}, ${rid}, now())`);
-          await sql.transaction(transactionQueries);
+          await sqlTransaction(transactionQueries);
           await writeAudit(s, 'ATTEMPT_SUBMITTED', 'attempt', id, { source_session_id: sourceSessionId, score: ts, max_score: ms });
           return json({ attempt: { id, score: ts, max_score: ms, status: 'submitted', submitted_at: new Date().toISOString() }, answers: ar, receipt_id: rid });
         } catch (e) { throw e; }
