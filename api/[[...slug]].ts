@@ -509,7 +509,7 @@ async function dispatch(req: Request): Promise<Response> {
         } else if (s.role === 'TEACHER') {
           rows = await sql`SELECT ca.id, ca.title, ca.start_at, ca.due_at, ca.is_active, ca.created_at, c.id AS class_id, c.name AS class_name, hm.id AS html_module_id, hm.title AS html_title, hm.version, hm.status, hm.source_bank_id, hm.source_session_id, (SELECT count(*) FROM questions q JOIN learning_sessions ls ON ls.id = q.session_id JOIN question_banks qb ON qb.id = ls.bank_id WHERE qb.source_bank_id = hm.source_bank_id AND ls.source_session_id = hm.source_session_id) AS linked_question_count, (SELECT count(*) FROM attempts a WHERE a.assignment_id = ca.id) AS attempt_count FROM class_assignments ca JOIN classes c ON c.id = ca.class_id AND c.teacher_id = ${s.sub} JOIN html_modules hm ON hm.id = ca.html_module_id ORDER BY ca.created_at DESC`;
         } else {
-          rows = await sql`SELECT ca.id, ca.title, ca.start_at, ca.due_at, ca.is_active, ca.created_at, c.id AS class_id, c.name AS class_name, hm.id AS html_module_id, hm.title AS html_title, hm.version, hm.status, hm.source_bank_id, hm.source_bank_version, hm.source_session_id, (SELECT count(*) FROM questions q JOIN learning_sessions ls ON ls.id = q.session_id JOIN question_banks qb ON qb.id = ls.bank_id WHERE qb.source_bank_id = hm.source_bank_id AND qb.package_version = hm.source_bank_version AND ls.source_session_id = hm.source_session_id) AS linked_question_count, (SELECT count(*) FROM attempts a WHERE a.assignment_id = ca.id AND a.student_id = ${s.sub}) AS my_attempts FROM class_assignments ca JOIN classes c ON c.id = ca.class_id JOIN class_memberships cm ON cm.class_id = c.id AND cm.user_id = ${s.sub} JOIN html_modules hm ON hm.id = ca.html_module_id WHERE ca.is_active = true AND hm.is_published = true ORDER BY ca.created_at DESC`;
+          rows = await sql`SELECT ca.id, ca.title, ca.start_at, ca.due_at, ca.is_active, ca.created_at, c.id AS class_id, c.name AS class_name, hm.id AS html_module_id, hm.title AS html_title, hm.version, hm.status, hm.source_bank_id, hm.source_bank_version, hm.source_session_id, (SELECT count(*) FROM questions q JOIN learning_sessions ls ON ls.id = q.session_id JOIN question_banks qb ON qb.id = ls.bank_id WHERE qb.source_bank_id = hm.source_bank_id AND qb.package_version = hm.source_bank_version AND ls.source_session_id = hm.source_session_id) AS linked_question_count, (SELECT count(*) FROM attempts a WHERE a.assignment_id = ca.id AND a.student_id = ${s.sub}) AS my_attempts FROM class_assignments ca JOIN classes c ON c.id = ca.class_id JOIN class_memberships cm ON cm.class_id = c.id AND cm.user_id = ${s.sub} JOIN html_modules hm ON hm.id = ca.html_module_id WHERE ca.is_active = true AND hm.is_published = true AND (ca.start_at IS NULL OR ca.start_at <= now()) ORDER BY ca.created_at DESC`;
         }
         return json({ assignments: rows });
       });
@@ -563,14 +563,18 @@ async function dispatch(req: Request): Promise<Response> {
         const b = await getBody(r);
         const aid = b?.assignment_id; const ik = b?.idempotency_key || cryptoRandBytes(4).toString('hex');
         if (!aid) return err('assignment_id required', 400);
-        const asg = (await sql`SELECT ca.id, c.id AS class_id FROM class_assignments ca JOIN classes c ON c.id = ca.class_id WHERE ca.id = ${aid}`)[0];
+        const asg = (await sql`SELECT ca.id, ca.is_active, ca.start_at, ca.due_at, c.id AS class_id FROM class_assignments ca JOIN classes c ON c.id = ca.class_id WHERE ca.id = ${aid}`)[0];
         if (!asg) return err('Assignment not found', 404);
+        if (!asg.is_active) return err('Penugasan sudah dinonaktifkan.', 409, 'ASSIGNMENT_INACTIVE');
+        if (asg.start_at && new Date(asg.start_at) > new Date()) return err('Penugasan belum dimulai.', 409, 'ASSIGNMENT_NOT_STARTED');
+        if (asg.due_at && new Date(asg.due_at) < new Date()) return err('Batas waktu penugasan telah lewat.', 409, 'ASSIGNMENT_DEADLINE_PASSED');
         const mem = await sql`SELECT 1 FROM class_memberships WHERE class_id = ${asg.class_id} AND user_id = ${s.sub}`;
         if (!mem[0]) return err('Not member', 403);
-        const ex = await sql`SELECT id, status FROM attempts WHERE assignment_id = ${aid} AND student_id = ${s.sub}`;
-        if (ex[0]) return json({ attempt: ex[0] });
-        const rows = await sql`INSERT INTO attempts (id, assignment_id, student_id, status, idempotency_key, started_at) VALUES (gen_random_uuid(), ${aid}, ${s.sub}, 'in_progress', ${ik}, now()) RETURNING id, assignment_id, student_id, status, idempotency_key, started_at`;
-        return json({ attempt: rows[0] }, 201);
+        const inserted = await sql`INSERT INTO attempts (id, assignment_id, student_id, status, idempotency_key, started_at) VALUES (gen_random_uuid(), ${aid}, ${s.sub}, 'in_progress', ${ik}, now()) ON CONFLICT (assignment_id, student_id) DO NOTHING RETURNING id, assignment_id, student_id, status, idempotency_key, started_at`;
+        if (inserted[0]) return json({ attempt: inserted[0] }, 201);
+        const existing = await sql`SELECT id, assignment_id, student_id, status, idempotency_key, started_at, score, max_score, submitted_at FROM attempts WHERE assignment_id = ${aid} AND student_id = ${s.sub}`;
+        if (!existing[0]) return err('Attempt could not be created. Please retry.', 409, 'ATTEMPT_CREATE_CONFLICT');
+        return json({ attempt: existing[0] });
       });
     }
     return err('Method not allowed', 405);
@@ -594,8 +598,11 @@ async function dispatch(req: Request): Promise<Response> {
       return await withAuth(req, async (r, s) => {
         if (s.role !== 'STUDENT') return err('Only students', 403);
         const b = await getBody(r);
-        const ans: any[] = b?.answers || [];
+        const ans: any[] = Array.isArray(b?.answers) ? b.answers : [];
         const ik = b?.idempotency_key;
+        if (!Array.isArray(b?.answers) || ans.length === 0) return err('answers must be a non-empty array', 400, 'ANSWERS_REQUIRED');
+        const submittedQuestionIds = ans.map((item: any) => String(item?.question_id || ''));
+        if (submittedQuestionIds.some((qid: string) => !qid) || new Set(submittedQuestionIds).size !== submittedQuestionIds.length) return err('Setiap soal hanya boleh dikirim satu kali dan harus memiliki question_id', 400, 'DUPLICATE_OR_MISSING_QUESTION_ID');
         const att = await sql`SELECT a.*, ca.due_at FROM attempts a JOIN class_assignments ca ON ca.id = a.assignment_id WHERE a.id = ${id}`;
         if (!att[0]) return err('Not found', 404);
         if (att[0].student_id !== s.sub) return err('Forbidden', 403);
@@ -611,6 +618,7 @@ async function dispatch(req: Request): Promise<Response> {
           const sourceQuestions = await sql`SELECT q.id, q.source_question_id, q.points, ak.answer FROM questions q JOIN learning_sessions ls ON ls.id = q.session_id JOIN question_banks qb ON qb.id = ls.bank_id LEFT JOIN question_answer_keys ak ON ak.question_id = q.id WHERE ls.source_session_id = ${sourceSessionId} AND qb.source_bank_id = ${sourceBankId} AND qb.package_version = ${sourceBankVersion} ORDER BY q.source_question_id`;
           const expected = await sql`SELECT ls.total_questions FROM learning_sessions ls JOIN question_banks qb ON qb.id = ls.bank_id WHERE ls.source_session_id = ${sourceSessionId} AND qb.source_bank_id = ${sourceBankId} AND qb.package_version = ${sourceBankVersion} LIMIT 1`;
           const expectedCount = Number(expected[0]?.total_questions || 0);
+          if (new Set(sourceQuestions.map((q: any) => String(q.source_question_id))).size !== sourceQuestions.length) return err('Bank sumber memiliki source_question_id duplikat.', 409, 'SOURCE_QUESTION_DUPLICATE');
           if (!expectedCount || sourceQuestions.length !== expectedCount || sourceQuestions.some((q: any) => !q.answer)) return err('Bank soal atau answer key untuk sesi ini belum lengkap di server. Jawaban Anda tetap dapat disimpan sebagai laporan offline UNVERIFIED; nilai resmi belum tersedia.', 409, 'QUESTION_KEY_COVERAGE_INCOMPLETE');
           sourceQuestionMap = new Map(sourceQuestions.map((q: any) => [q.source_question_id, q]));
           if (ans.some((item: any) => !sourceQuestionMap.has(String(item.question_id)))) return err('ID soal yang dikirim tidak cocok dengan bank soal sesi ini. Hasil belum dinilai.', 409, 'QUESTION_ID_MISMATCH');
