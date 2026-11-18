@@ -114,7 +114,10 @@ async function main() {
   const appliedSet = new Set(applied.map(r => r.version));
 
   for (const file of files) {
-    if (appliedSet.has(file)) {
+    const version = file.replace(/\\.sql$/i, '');
+    // Older runs may have recorded either the filename (with .sql) or the
+    // explicit version inserted by the migration SQL. Recognize both forms.
+    if (appliedSet.has(file) || appliedSet.has(version)) {
       console.log(`SKIP ${file} (already applied)`);
       continue;
     }
@@ -132,7 +135,7 @@ async function main() {
         process.exit(1);
       }
     }
-    await sql`INSERT INTO schema_migrations (version) VALUES (${file}) ON CONFLICT (version) DO NOTHING`;
+    await sql`INSERT INTO schema_migrations (version) VALUES (${version}) ON CONFLICT (version) DO NOTHING`;
     console.log(`OK ${file}`);
   }
 

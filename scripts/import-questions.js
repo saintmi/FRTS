@@ -154,7 +154,7 @@ async function main() {
       }
 
       // Upsert bank (idempotent)
-      let bankRow = await sql`SELECT id FROM question_banks WHERE source_package = ${pkg.file} AND source_bank_id = ${norm.bank.source_bank_id}`;
+      let bankRow = await sql`SELECT id FROM question_banks WHERE source_package = ${pkg.file} AND source_bank_id = ${norm.bank.source_bank_id} AND package_version = ${norm.bank.package_version}`;
       if (!bankRow[0]) {
         const ins = await sql`INSERT INTO question_banks (id, name, source_package, source_bank_id, package_version, status, total_questions, total_sessions, created_at)
           VALUES (gen_random_uuid(), ${norm.bank.name}, ${norm.bank.source_package}, ${norm.bank.source_bank_id}, ${norm.bank.package_version}, ${norm.bank.status}, ${norm.totalQuestions}, 0, now())
