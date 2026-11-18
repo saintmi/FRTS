@@ -204,22 +204,6 @@ function ClassCreate() {
   );
 }
 
-function StudentProgress() {
-  const [attempts, setAttempts] = useState<any[]>([]);
-  const [busy, setBusy] = useState(false);
-  useEffect(() => { setBusy(true); getJSON('/api/attempts').then((d: any) => setAttempts(d.attempts || [])).finally(() => setBusy(false)); }, []);
-  return (
-    <div className="page">
-      <h1 className="h1">Progres Saya</h1>
-      {busy && <div className="spinner" />}
-      {attempts.length === 0 && <p className="muted">Belum ada pengerjaan.</p>}
-      <table className="table"><thead><tr><th>Assignment</th><th>Skor</th><th>Maks</th><th>Status</th><th>Waktu</th></tr></thead>
-        <tbody>{attempts.map((a: any) => studentAttemptRow(a))}</tbody>
-      </table>
-    </div>
-  );
-}
-
 function studentAttemptRow(a: any) {
   return (
     <tr key={a.id}>
@@ -474,7 +458,7 @@ function StudentProgress() {
     <div className="page">
       <h1 className="h1">Progres Saya</h1>
       <p className="muted">Skor reading dan refleksi kosakata ditampilkan secara terpisah.</p>
-      <ErrorNotice value={error} />
+      {error && <div className="alert error">{error}</div>}
       {busy && <div className="spinner" />}
       <div className="card"><h2 className="section-title">Reading Comprehension</h2>
         {attempts.length === 0 ? <p className="muted">Belum ada pengerjaan.</p> :
