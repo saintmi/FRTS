@@ -157,12 +157,10 @@ export function AdminContentPage() {
     for (const file of files) {
       const html = await file.text();
       const sessionMatch = html.match(/"session_id"\s*:\s*"([^"]+)"/);
-      const bankMatch = html.match(/"bank_id"\s*:\s*"([^"]+)"/);
       const weekMatch = html.match(/"week"\s*:\s*(\d+)/);
       const titleMatch = html.match(/<title[^>]*>([\s\S]*?)<\/title>/i);
       const sessionId = sessionMatch?.[1] || '';
-      const bankId = bankMatch?.[1] || '';
-      if (bankId !== 'FRTS-B1-W1-4') { setError('File ' + file.name + ' bukan bagian dari bank FRTS-B1-W1-4.'); return; }
+      const bankId = 'FRTS-B1-W1-4';
       if (!/^W[1-4]-ONLINE-0[12]$/.test(sessionId)) { setError('File ' + file.name + ' tidak memiliki session_id Batch 1 yang valid.'); return; }
       if (seen.has(sessionId)) { setError('Ada file duplikat untuk sesi ' + sessionId + '.'); return; }
       seen.add(sessionId);
@@ -195,6 +193,11 @@ export function AdminContentPage() {
       await load();
     } finally { setImporting(false); setProgress(''); }
   }
+  async function setPublish(module: Row, next: boolean) {
+    setError(''); setNotice('');
+    try { await postJSON('/api/html/' + module.id, { is_published: next }); setNotice(next ? 'Materi berhasil diterbitkan.' : 'Publikasi materi dinonaktifkan.'); await load(); }
+    catch (e: any) { setError(e.message || 'Status publikasi gagal diperbarui.'); }
+  }
   async function openHtml(id: string) { window.open('/api/html/' + id, '_blank', 'noopener,noreferrer'); }
   return <div className="page dashboard-page">
     <div className="page-heading"><div><h1 className="h1">Bank Konten HTML</h1><p className="muted">Pusat materi. Konten impor tetap menunggu review sebelum dapat dipublikasikan.</p></div><button className="secondary" onClick={load}>Muat ulang</button></div>
@@ -206,7 +209,7 @@ export function AdminContentPage() {
     </div>
     <div className="card">{busy ? <div className="spinner" /> : items.length === 0 ? <Empty>Bank HTML masih kosong.</Empty> :
       <TableWrap><thead><tr><th>Materi</th><th>Sesi sumber</th><th>Versi</th><th>Status</th><th>Publish</th><th></th></tr></thead><tbody>
-        {items.map(m => <tr key={m.id}><td>{m.title}</td><td>{m.source_session_id || 'Upload umum'}</td><td>v{m.version}</td><td><span className="badge">{m.status}</span></td><td>{m.is_published ? 'Ya' : 'Tidak'}</td><td><button className="secondary" onClick={() => void openHtml(m.id)}>Pratinjau</button></td></tr>)}
+        {items.map(m => <tr key={m.id}><td>{m.title}</td><td>{m.source_session_id || 'Upload umum'}</td><td>v{m.version}</td><td><span className="badge">{m.status}</span></td><td>{m.is_published ? 'Ya' : 'Tidak'}</td><td className="action-cell"><button className="secondary" onClick={() => void openHtml(m.id)}>Pratinjau</button>{m.status === 'APPROVED' && <button onClick={() => void setPublish(m, !m.is_published)}>{m.is_published ? 'Nonaktifkan' : 'Terbitkan'}</button>}</td></tr>)}
       </tbody></TableWrap>}</div>
   </div>;
 }
