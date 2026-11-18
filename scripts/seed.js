@@ -1,10 +1,11 @@
-const { neon } = require('@neondatabase/serverless');
-const bcrypt = require('bcryptjs');
+import fs from 'node:fs';
+import path from 'node:path';
+import { neon } from '@neondatabase/serverless';
+import bcrypt from 'bcryptjs';
 
 function stripBom(s) { return s.replace(/^\uFEFF/, ''); }
 function loadEnv() {
-  const fs = require('fs');
-  const raw = fs.readFileSync(require('path').resolve(process.cwd(), '.env'), 'utf8');
+  const raw = fs.readFileSync(path.resolve(process.cwd(), '.env'), 'utf8');
   const env = {};
   for (const line of stripBom(raw).split('\n')) {
     const m = line.match(/^([^=]+)=(.*)$/);
