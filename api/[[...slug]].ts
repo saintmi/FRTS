@@ -337,9 +337,17 @@ async function dispatch(req: Request): Promise<Response> {
         const mime = file.type || '';
         if (mime && !mime.includes('html')) return err('Invalid MIME', 400);
         const ab = await file.arrayBuffer();
-        const content = Buffer.from(ab).toString('utf8');
-        const checksum = crypto.createHash('sha256').update(content).digest('hex');
+        let content = Buffer.from(ab).toString('utf8');
         if (!/<\s*html|<!DOCTYPE/i.test(content)) return err('Invalid HTML', 400);
+        if (sourceSessionId) {
+          const sessionMatch = content.match(/\"session_id\"\\s*:\\s*\"([^\"]+)\"/);
+          if (!sessionMatch || sessionMatch[1] !== sourceSessionId) return err('ID sesi pada HTML tidak cocok dengan metadata upload', 422, 'SESSION_ID_MISMATCH');
+          const bridgeMarker = "const blob=new Blob([JSON.stringify(report,null,2)]";
+          if (!content.includes('function exportReport(){const report=') || !content.includes(bridgeMarker)) return err('Format laporan HTML tidak sesuai kontrak FRTS Vocabulary-First', 422, 'HTML_REPORT_CONTRACT_MISMATCH');
+          content = content.replace(bridgeMarker, "if(window.parent!==window){window.parent.postMessage({type:'FRTS_ATTEMPT_REPORT',payload:report},'*');}const blob=new Blob([JSON.stringify(report,null,2)]");
+          content = content.replace('Unduh laporan latihan (.json)', 'Kirim hasil ke portal / unduh salinan (.json)');
+        }
+        const checksum = crypto.createHash('sha256').update(content).digest('hex');
         if (sourceSessionId) {
           const existing = await sql`SELECT id FROM html_modules WHERE source_session_id = ${sourceSessionId} LIMIT 1`;
           if (existing[0]) return err('Sesi ini sudah terdaftar di bank HTML', 409, 'SESSION_ALREADY_IMPORTED');
@@ -406,7 +414,7 @@ async function dispatch(req: Request): Promise<Response> {
         if (b?.action === 'publish' || typeof b?.is_published === 'boolean') {
           const current = await sql`SELECT status FROM html_modules WHERE id = ${id}`;
           const ip = b?.is_published === true;
-          if (ip && current[0]?.status === 'REVIEW_REQUIRED') return err('Konten masih menunggu persetujuan admin', 409, 'REVIEW_REQUIRED');
+          if (ip && current[0]?.status !== 'APPROVED' && (await sql`SELECT source_session_id FROM html_modules WHERE id = ${id}`)[0]?.source_session_id) return err('Konten sesi kanonis harus disetujui admin sebelum dipublikasikan', 409, 'REVIEW_REQUIRED');
           const rows = await sql`UPDATE html_modules SET is_published = ${ip}, updated_at = now() WHERE id = ${id} RETURNING id, is_published, status`;
           await writeAudit(s, ip ? 'HTML_MODULE_PUBLISHED' : 'HTML_MODULE_UNPUBLISHED', 'html_module', id, {});
           return json({ html_module: rows[0] });
@@ -445,6 +453,12 @@ async function dispatch(req: Request): Promise<Response> {
         if (!hm) return err('HTML module not found', 404);
         if (!hm.is_published) return err('Materi belum diterbitkan', 409, 'NOT_PUBLISHED');
         if (hm.source_session_id && hm.status !== 'APPROVED') return err('Materi masih menunggu review admin', 409, 'REVIEW_REQUIRED');
+        if (hm.source_session_id) {
+          const sessionInfo = await sql`SELECT total_questions FROM learning_sessions WHERE source_session_id = ${hm.source_session_id} LIMIT 1`;
+          const keyed = await sql`SELECT count(*)::int AS count FROM questions q JOIN learning_sessions ls ON ls.id = q.session_id JOIN question_answer_keys ak ON ak.question_id = q.id WHERE ls.source_session_id = ${hm.source_session_id}`;
+          const expected = Number(sessionInfo[0]?.total_questions || 0);
+          if (!expected || Number(keyed[0]?.count || 0) !== expected) return err('Bank soal atau answer key untuk sesi HTML ini belum lengkap di Neon. Import dan verifikasi bank/kunci terlebih dahulu.', 409, 'QUESTION_KEY_COVERAGE_INCOMPLETE');
+        }
         const vr = (await sql`SELECT id, version, content, checksum FROM html_module_versions WHERE module_id = ${hid} ORDER BY version DESC LIMIT 1`)[0];
         const rows = await sql`INSERT INTO class_assignments (id, class_id, html_module_id, html_module_version_id, title, start_at, due_at, is_active, created_by, created_at) VALUES (gen_random_uuid(), ${cid}, ${hid}, ${vr ? vr.id : null}, ${title}, ${sa || null}, ${da || null}, true, ${s.sub}, now()) RETURNING id, class_id, html_module_id, html_module_version_id, title, start_at, due_at, is_active, created_at`;
         await writeAudit(s, 'ASSIGNMENT_CREATED', 'assignment', rows[0].id, { class_id: cid, html_module_id: hid, title });
