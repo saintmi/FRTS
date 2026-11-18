@@ -26,7 +26,7 @@ function json(d: any, s = 200, i?: ResponseInit) { return new Response(JSON.stri
 function err(m: string, s = 400, c?: string) { return json({ error: m, code: c }, s); }
 async function validateCanonicalHtmlModule(module: any): Promise<{ ok: boolean; code?: string; message?: string }> {
   if (!module.source_bank_id || !module.source_bank_version || !module.source_session_id) return { ok: false, code: 'SOURCE_IDENTITY_INCOMPLETE', message: 'Identitas bank/versi/sesi belum lengkap.' };
-  const match = String(module.content || '').match(/<script[^>]*id=["']moduleData["'][^>]*>([\\s\\S]*?)<\\/script>/i);
+  const match = String(module.content || '').match(/<script[^>]*id=["']moduleData["'][^>]*>([\s\S]*?)<\/script>/i);
   if (!match) return { ok: false, code: 'MODULE_DATA_MISSING', message: 'Data modul HTML tidak ditemukan.' };
   let data: any;
   try { data = JSON.parse(match[1]); } catch { return { ok: false, code: 'MODULE_DATA_INVALID', message: 'Metadata HTML bukan JSON valid.' }; }
@@ -49,7 +49,7 @@ async function validateCanonicalHtmlModule(module: any): Promise<{ ok: boolean; 
   const htmlQMap = new Map(htmlQs.map((q: any) => [String(q.id), q]));
   for (const q of qRows) { const item: any = htmlQMap.get(String(q.source_question_id)); if ((q.source_stimulus_id ? String(q.source_stimulus_id) : '') !== (item?.stimulus_id ? String(item.stimulus_id) : '')) return { ok: false, code: 'QUESTION_STIMULUS_LINK_MISMATCH', message: 'Relasi stimulus untuk soal ' + q.source_question_id + ' tidak cocok.' }; }
   const htmlStMap = new Map(htmlSts.map((st: any) => [String(st.id), st]));
-  const norm = (v: any) => String(v || '').replace(/\\s+/g, ' ').trim();
+  const norm = (v: any) => String(v || '').replace(/\s+/g, ' ').trim();
   for (const st of stRows) { const item: any = htmlStMap.get(String(st.source_stimulus_id)); if (!item || norm(item.text) !== norm(st.content)) return { ok: false, code: 'STIMULUS_CONTENT_MISMATCH', message: 'Teks stimulus ' + st.source_stimulus_id + ' tidak cocok.' }; }
   return { ok: true };
 }
