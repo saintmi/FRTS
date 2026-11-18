@@ -422,11 +422,11 @@ async function dispatch(req: Request): Promise<Response> {
       return await withAuth(req, async (_r, s) => {
         let rows: any[];
         if (s.role === 'ADMIN') {
-          rows = await sql`SELECT ca.id, ca.title, ca.start_at, ca.due_at, ca.is_active, ca.created_at, c.id AS class_id, c.name AS class_name, hm.id AS html_module_id, hm.title AS html_title, hm.version, hm.status, (SELECT count(*) FROM attempts a WHERE a.assignment_id = ca.id) AS attempt_count FROM class_assignments ca JOIN classes c ON c.id = ca.class_id JOIN html_modules hm ON hm.id = ca.html_module_id ORDER BY ca.created_at DESC`;
+          rows = await sql`SELECT ca.id, ca.title, ca.start_at, ca.due_at, ca.is_active, ca.created_at, c.id AS class_id, c.name AS class_name, hm.id AS html_module_id, hm.title AS html_title, hm.version, hm.status, hm.source_session_id, (SELECT count(*) FROM questions q JOIN learning_sessions ls ON ls.id = q.session_id WHERE ls.source_session_id = hm.source_session_id) AS linked_question_count, (SELECT count(*) FROM attempts a WHERE a.assignment_id = ca.id) AS attempt_count FROM class_assignments ca JOIN classes c ON c.id = ca.class_id JOIN html_modules hm ON hm.id = ca.html_module_id ORDER BY ca.created_at DESC`;
         } else if (s.role === 'TEACHER') {
           rows = await sql`SELECT ca.id, ca.title, ca.start_at, ca.due_at, ca.is_active, ca.created_at, c.id AS class_id, c.name AS class_name, hm.id AS html_module_id, hm.title AS html_title, hm.version, hm.status, (SELECT count(*) FROM attempts a WHERE a.assignment_id = ca.id) AS attempt_count FROM class_assignments ca JOIN classes c ON c.id = ca.class_id AND c.teacher_id = ${s.sub} JOIN html_modules hm ON hm.id = ca.html_module_id ORDER BY ca.created_at DESC`;
         } else {
-          rows = await sql`SELECT ca.id, ca.title, ca.start_at, ca.due_at, ca.is_active, ca.created_at, c.id AS class_id, c.name AS class_name, hm.id AS html_module_id, hm.title AS html_title, hm.version, hm.status, (SELECT count(*) FROM attempts a WHERE a.assignment_id = ca.id AND a.student_id = ${s.sub}) AS my_attempts FROM class_assignments ca JOIN classes c ON c.id = ca.class_id JOIN class_memberships cm ON cm.class_id = c.id AND cm.user_id = ${s.sub} JOIN html_modules hm ON hm.id = ca.html_module_id WHERE ca.is_active = true AND hm.is_published = true ORDER BY ca.created_at DESC`;
+          rows = await sql`SELECT ca.id, ca.title, ca.start_at, ca.due_at, ca.is_active, ca.created_at, c.id AS class_id, c.name AS class_name, hm.id AS html_module_id, hm.title AS html_title, hm.version, hm.status, hm.source_session_id, (SELECT count(*) FROM questions q JOIN learning_sessions ls ON ls.id = q.session_id WHERE ls.source_session_id = hm.source_session_id) AS linked_question_count, (SELECT count(*) FROM attempts a WHERE a.assignment_id = ca.id AND a.student_id = ${s.sub}) AS my_attempts FROM class_assignments ca JOIN classes c ON c.id = ca.class_id JOIN class_memberships cm ON cm.class_id = c.id AND cm.user_id = ${s.sub} JOIN html_modules hm ON hm.id = ca.html_module_id WHERE ca.is_active = true AND hm.is_published = true ORDER BY ca.created_at DESC`;
         }
         return json({ assignments: rows });
       });
@@ -441,10 +441,13 @@ async function dispatch(req: Request): Promise<Response> {
         const cls = (await sql`SELECT teacher_id FROM classes WHERE id = ${cid}`)[0];
         if (!cls) return err('Class not found', 404);
         if (s.role === 'TEACHER' && cls.teacher_id !== s.sub) return err('Forbidden', 403);
-        const hm = (await sql`SELECT id FROM html_modules WHERE id = ${hid}`)[0];
+        const hm = (await sql`SELECT id, status, is_published, source_session_id FROM html_modules WHERE id = ${hid}`)[0];
         if (!hm) return err('HTML module not found', 404);
+        if (!hm.is_published) return err('Materi belum diterbitkan', 409, 'NOT_PUBLISHED');
+        if (hm.source_session_id && hm.status !== 'APPROVED') return err('Materi masih menunggu review admin', 409, 'REVIEW_REQUIRED');
         const vr = (await sql`SELECT id, version, content, checksum FROM html_module_versions WHERE module_id = ${hid} ORDER BY version DESC LIMIT 1`)[0];
         const rows = await sql`INSERT INTO class_assignments (id, class_id, html_module_id, html_module_version_id, title, start_at, due_at, is_active, created_by, created_at) VALUES (gen_random_uuid(), ${cid}, ${hid}, ${vr ? vr.id : null}, ${title}, ${sa || null}, ${da || null}, true, ${s.sub}, now()) RETURNING id, class_id, html_module_id, html_module_version_id, title, start_at, due_at, is_active, created_at`;
+        await writeAudit(s, 'ASSIGNMENT_CREATED', 'assignment', rows[0].id, { class_id: cid, html_module_id: hid, title });
         return json({ assignment: rows[0] }, 201);
       });
     }
@@ -538,6 +541,19 @@ async function dispatch(req: Request): Promise<Response> {
     return err('Method not allowed', 405);
   }
 
+
+  if (segs.length === 1 && segs[0] === 'audit' && method === 'GET') {
+    return await withAuth(req, async (r, s) => {
+      const url = new URL(r.url);
+      const limit = Math.min(200, Math.max(1, Number(url.searchParams.get('limit') || 100)));
+      const rows = await sql\`
+        SELECT id, actor_id, actor_email, action, entity_type, entity_id, metadata, created_at
+        FROM audit_logs ORDER BY created_at DESC LIMIT \${limit}
+      \`;
+      return json({ audit_logs: rows });
+    }, ['ADMIN']);
+  }
+
   if (segs.length === 1 && segs[0] === 'reports' && method === 'GET') {
     return await withAuth(req, async (r, s) => {
       if (s.role === 'STUDENT') return err('Forbidden', 403);
@@ -546,9 +562,27 @@ async function dispatch(req: Request): Promise<Response> {
       const aid = u.searchParams.get('assignment_id');
       const csv = u.searchParams.get('export') === 'csv';
       const cesc = (v: any): string => { const s2 = v == null ? '' : String(v); if (/[",\n\r]/.test(s2)) return '"' + s2.replace(/"/g, '""') + '"'; return s2; };
+
+      if (!cid && !aid) {
+        if (s.role !== 'ADMIN') return err('class_id or assignment_id required', 400);
+        const [users, classes, modules, assignments, attempts, imports, recent] = await Promise.all([
+          sql\`SELECT role, count(*)::int AS count FROM users GROUP BY role\`,
+          sql\`SELECT count(*)::int AS count, count(*) FILTER (WHERE is_active)::int AS active FROM classes\`,
+          sql\`SELECT status, count(*)::int AS count FROM html_modules GROUP BY status\`,
+          sql\`SELECT count(*)::int AS count, count(*) FILTER (WHERE is_active)::int AS active FROM class_assignments\`,
+          sql\`SELECT status, count(*)::int AS count FROM attempts GROUP BY status\`,
+          sql\`SELECT package_name, package_version, status, total_questions, total_sessions, imported_questions, created_at FROM content_imports ORDER BY created_at DESC LIMIT 8\`,
+          sql\`SELECT a.id AS attempt_id, a.status, a.score, a.max_score, a.submitted_at, ca.title AS assignment_title, c.name AS class_name, u.email AS student_email, up.full_name AS student_name FROM attempts a JOIN class_assignments ca ON ca.id = a.assignment_id JOIN classes c ON c.id = ca.class_id JOIN users u ON u.id = a.student_id LEFT JOIN user_profiles up ON up.user_id = u.id ORDER BY a.started_at DESC LIMIT 12\`
+        ]);
+        return json({
+          summary: { users, classes: classes[0] || { count: 0, active: 0 }, html_modules_by_status: modules, assignments: assignments[0] || { count: 0, active: 0 }, attempts_by_status: attempts },
+          recent_imports: imports,
+          recent_attempts: recent
+        });
+      }
       if (cid) {
         if (s.role === 'TEACHER') { const cls = await sql`SELECT teacher_id FROM classes WHERE id = ${cid}`; if (!cls[0] || cls[0].teacher_id !== s.sub) return err('Forbidden', 403); }
-        const rows = await sql`SELECT a.id AS attempt_id, a.student_id, u.email AS student_email, up.full_name AS student_name, ca.title AS assignment_title, a.status, a.score, a.max_score, a.submitted_at FROM attempts a JOIN users u ON u.id = a.student_id LEFT JOIN user_profiles up ON u.id = u.id JOIN class_assignments ca ON ca.id = a.assignment_id WHERE ca.class_id = ${cid} ORDER BY a.submitted_at DESC NULLS LAST`;
+        const rows = await sql`SELECT a.id AS attempt_id, a.student_id, u.email AS student_email, up.full_name AS student_name, ca.title AS assignment_title, a.status, a.score, a.max_score, a.submitted_at FROM attempts a JOIN users u ON u.id = a.student_id LEFT JOIN user_profiles up ON up.user_id = u.id JOIN class_assignments ca ON ca.id = a.assignment_id WHERE ca.class_id = ${cid} ORDER BY a.submitted_at DESC NULLS LAST`;
         if (csv) {
           const hd = ['attempt_id','student_email','student_name','assignment_title','status','score','max_score','submitted_at'];
           const lines = [hd.map(cesc).join(',')];
