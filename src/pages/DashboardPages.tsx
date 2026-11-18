@@ -389,7 +389,7 @@ export function AssessmentViewerPage() {
   return <div className="page dashboard-page"><h1 className="h1">{assignment.title}</h1><p className="muted">{assignment.class_name} · {assignment.html_title || 'Materi HTML'}</p>
     {assignment.due_at && <p className="muted small">Batas: {assignment.due_at}</p>}
     <div className="notice-card"><strong>Cara mengirim hasil:</strong> selesaikan latihan sampai tahap “Memory Review”, lalu tekan tombol “Kirim hasil ke portal / unduh salinan”. Hasil kosakata dicatat sebagai latihan formatif, terpisah dari skor reading.</div>
-    <div className="card preview-wrap"><iframe ref={frameRef} className="viewer" src={'/api/html/' + assignment.html_module_id} title="Latihan FRTS" sandbox="allow-scripts allow-forms" /></div>
+    <div className="card preview-wrap"><iframe ref={frameRef} className="viewer" src={'/api/html/' + assignment.html_module_id} title="Latihan FRTS" sandbox="allow-scripts allow-forms allow-downloads" /></div>
     {status && <div className="alert success" aria-live="polite">{status}</div>}<ErrorNotice value={error} />
     {result && <div className="card"><h2 className="section-title">Hasil reading terverifikasi</h2><p><strong>{result.score}</strong> / {result.max_score}</p><p>Status: {result.status}</p><p className="muted small">Jawaban vocabulary disimpan sebagai laporan formatif dan tidak digabung ke skor reading.</p></div>}
   </div>;
