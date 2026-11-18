@@ -1,0 +1,238 @@
+# FRTS backup patch
+
+Date: 2026-11-19
+Source: Pull Request #1
+Source branch: fix/ci-security-runtime-audit
+Target branch: main
+Purpose: Preserve the unmerged trial changes before consolidating work on main.
+
+IMPORTANT: This is a review/restore patch only. It has NOT been applied to main and must not be applied wholesale without re-auditing the code, CI, and Neon schema.
+
+
+## .github/workflows/ci.yml
+
+@@ -0,0 +1,35 @@
++name: CI
++
++on:
++  push:
++    branches: [main, "fix/**", "feature/**"]
++  pull_request:
++    branches: [main]
++  workflow_dispatch:
++
++permissions:
++  contents: read
++
++concurrency:
++  group: ci-${{ github.workflow }}-${{ github.ref }}
++  cancel-in-progress: true
++
++jobs:
++  validate:
++    name: Lint and production build
++    runs-on: ubuntu-latest
++    timeout-minutes: 15
++    steps:
++      - name: Checkout
++        uses: actions/checkout@v4
++      - name: Setup Node.js
++        uses: actions/setup-node@v4
++        with:
++          node-version: 20
++          cache: npm
++      - name: Install dependencies
++        run: npm ci
++      - name: ESLint
++        run: npm run lint
++      - name: TypeScript and Vite production build
++        run: npm run build
+
+## api/[[...slug]].ts
+
+@@ -10,7 +10,8 @@ let client: any = null;
+ function c(): any { if (!client) client = neon(gdu()); return client; }
+ export function sql(strings: TemplateStringsArray, ...values: any[]): any { return c()(strings, ...values); }
+ 
+-const AUTH_SECRET = process.env.AUTH_SECRET || 'dev-secret-change-me';
++const AUTH_SECRET = process.env.AUTH_SECRET || (process.env.NODE_ENV === 'production' ? '' : 'dev-secret-change-me');
++if (!AUTH_SECRET) throw new Error('AUTH_SECRET is required in production');
+ const COOKIE_NAME = 'frts_session';
+ const COOKIE_MAX_AGE = 60 * 60 * 24 * 7;
+ interface Session { sub: string; email: string; role: string; }
+@@ -56,6 +57,14 @@ async function dispatch(req: Request): Promise<Response> {
+     return json({ ok: true, service: 'frts-api' }, 200);
+   }
+ 
++  if (segs.length === 1 && segs[0] === 'users' && method === 'GET') {
++    return await withAuth(req, async (_r, session) => {
++      if (session.role !== 'ADMIN') return err('Forbidden', 403);
++      const rows = await sql`SELECT u.id, u.email, u.role, u.is_active, u.email_verified, u.created_at, up.full_name, up.institution FROM users u LEFT JOIN user_profiles up ON up.user_id = u.id ORDER BY u.created_at DESC`;
++      return json({ users: rows });
++    });
++  }
++
+   if (segs.length === 2 && segs[0] === 'auth') {
+     const action = segs[1];
+     if (action === 'login' && method === 'POST') {
+@@ -125,7 +134,7 @@ async function dispatch(req: Request): Promise<Response> {
+         if (!cls) return err('Class not found', 404);
+         if (s.role === 'TEACHER' && cls.teacher_id !== s.sub) return err('Forbidden', 403);
+         if (s.role === 'STUDENT') { const m = await sql`SELECT 1 FROM class_memberships WHERE class_id = ${id} AND user_id = ${s.sub}`; if (!m[0]) return err('Forbidden', 403); }
+-        const members = await sql`SELECT cm.user_id, u.email, up.full_name, cm.role, cm.joined_at FROM class_memberships cm JOIN users u ON u.id = cm.user_id LEFT JOIN user_profiles up ON u.id = u.id WHERE cm.class_id = ${id} ORDER BY cm.joined_at`;
++        const members = await sql`SELECT cm.user_id, u.email, up.full_name, cm.role, cm.joined_at FROM class_memberships cm JOIN users u ON u.id = cm.user_id LEFT JOIN user_profiles up ON up.user_id = u.id WHERE cm.class_id = ${id} ORDER BY cm.joined_at`;
+         return json({ class: cls, members });
+       });
+     }
+@@ -137,12 +146,13 @@ async function dispatch(req: Request): Promise<Response> {
+         if (s.role === 'TEACHER' && ex[0].teacher_id !== s.sub) return err('Forbidden', 403);
+         const b = await getBody(r);
+         const sets: string[] = [];
+-        if (b?.name !== undefined) sets.push(`name = ${b.name}`);
+-        if (b?.description !== undefined) sets.push(`description = ${b.description}`);
+-        if (b?.is_active !== undefined) sets.push(`is_active = ${b.is_active}`);
++        const values: any[] = [];
++        if (b?.name !== undefined) { values.push(String(b.name)); sets.push('name = $' + values.length); }
++        if (b?.description !== undefined) { values.push(b.description == null ? null : String(b.description)); sets.push('description = $' + values.length); }
++        if (b?.is_active !== undefined) { values.push(Boolean(b.is_active)); sets.push('is_active = $' + values.length); }
+         if (sets.length === 0) return err('No fields', 400);
+-        sets.push(`updated_at = now()`);
+-        const rows = await sql`UPDATE classes SET ${sets.join(', ')} WHERE id = ${id} RETURNING id, name, description, is_active, updated_at`;
++        values.push(id);
++        const rows = await c().query('UPDATE classes SET ' + sets.join(', ') + ', updated_at = now() WHERE id = $' + values.length + ' RETURNING id, name, description, is_active, updated_at', values);
+         return json({ class: rows[0] });
+       });
+     }
+@@ -294,13 +304,18 @@ async function dispatch(req: Request): Promise<Response> {
+         if (mod.uploaded_by !== s.sub && s.role !== 'ADMIN') return err('Forbidden', 403);
+         const b = await getBody(r);
+         const sets: string[] = [];
+-        if (b?.title !== undefined) sets.push(`title = ${b.title}`);
+-        if (b?.description !== undefined) sets.push(`description = ${b.description}`);
+-        if (b?.status !== undefined) sets.push(`status = ${b.status}`);
++        const values: any[] = [];
++        if (b?.title !== undefined) { values.push(String(b.title)); sets.push('title = $' + values.length); }
++        if (b?.description !== undefined) { values.push(b.description == null ? null : String(b.description)); sets.push('description = $' + values.length); }
++        if (b?.status !== undefined) {
++          if (s.role !== 'ADMIN') return err('Only administrators can change content status', 403);
++          const allowed = ['DRAFT', 'REVIEW_REQUIRED', 'APPROVED', 'ARCHIVED'];
++          if (!allowed.includes(b.status)) return err('Invalid content status', 400);
++          values.push(b.status); sets.push('status = $' + values.length);
++        }
+         if (sets.length === 0) return err('No fields', 400);
+-        sets.push(`updated_at = now()`);
+-        const q = `UPDATE html_modules SET ${sets.join(', ')} WHERE id = ${id} RETURNING id, title, description, status, updated_at`;
+-        const rows = await sql`${q}`;
++        values.push(id);
++        const rows = await c().query('UPDATE html_modules SET ' + sets.join(', ') + ', updated_at = now() WHERE id = $' + values.length + ' RETURNING id, title, description, status, updated_at', values);
+         return json({ html_module: rows[0] });
+       });
+     }
+@@ -362,7 +377,7 @@ async function dispatch(req: Request): Promise<Response> {
+         if (s.role === 'STUDENT') {
+           rows = await sql`SELECT a.id, a.assignment_id, a.status, a.score, a.max_score, a.started_at, a.submitted_at, ca.title AS assignment_title, c.id AS class_id FROM attempts a JOIN class_assignments ca ON ca.id = a.assignment_id JOIN classes c ON c.id = ca.class_id WHERE a.student_id = ${s.sub} ORDER BY a.started_at DESC`;
+         } else if (s.role === 'TEACHER') {
+-          rows = await sql`SELECT a.id, a.student_id, u.email AS student_email, up.full_name AS student_name, a.status, a.score, a.max_score, a.started_at, a.submitted_at, ca.title AS assignment_title FROM attempts a JOIN users u ON u.id = a.student_id LEFT JOIN user_profiles up ON u.id = u.id JOIN class_assignments ca ON ca.id = a.assignment_id JOIN classes c ON c.id = ca.class_id AND c.teacher_id = ${s.sub} ORDER BY a.started_at DESC`;
++          rows = await sql`SELECT a.id, a.student_id, u.email AS student_email, up.full_name AS student_name, a.status, a.score, a.max_score, a.started_at, a.submitted_at, ca.title AS assignment_title FROM attempts a JOIN users u ON u.id = a.student_id LEFT JOIN user_profiles up ON up.user_id = u.id JOIN class_assignments ca ON ca.id = a.assignment_id JOIN classes c ON c.id = ca.class_id AND c.teacher_id = ${s.sub} ORDER BY a.started_at DESC`;
+         } else {
+           rows = await sql`SELECT * FROM attempts ORDER BY started_at DESC`;
+         }
+@@ -422,9 +437,10 @@ async function dispatch(req: Request): Promise<Response> {
+             if (!q) continue;
+             ms += Number(q.points || 0);
+             let ic = null, pe = 0;
+-            const k = await sql`SELECT answer FROM question_answer_keys WHERE question_id = ${q.id}`;
+-            if (k) {
+-              ic = deq(av, k.answer) || deq(av, { correct_value: k.answer.correct_value }) || (av && (av.selected === k.answer.correct_value || av.correct_value === k.answer.correct_value || av.value === k.answer.correct_value)) || (av === k.answer.correct_value);
++            const keyRows = await sql`SELECT answer FROM question_answer_keys WHERE question_id = ${q.id}`;
++            if (keyRows[0]) {
++              const answerKey = keyRows[0].answer;
++              ic = deq(av, answerKey) || deq(av, { correct_value: answerKey.correct_value }) || (av && (av.selected === answerKey.correct_value || av.correct_value === answerKey.correct_value || av.value === answerKey.correct_value)) || (av === answerKey.correct_value);
+               if (ic) pe = Number(q.points || 0);
+             }
+             ts += pe;
+@@ -452,7 +468,7 @@ async function dispatch(req: Request): Promise<Response> {
+       const cesc = (v: any): string => { const s2 = v == null ? '' : String(v); if (/[",\n\r]/.test(s2)) return '"' + s2.replace(/"/g, '""') + '"'; return s2; };
+       if (cid) {
+         if (s.role === 'TEACHER') { const cls = await sql`SELECT teacher_id FROM classes WHERE id = ${cid}`; if (!cls[0] || cls[0].teacher_id !== s.sub) return err('Forbidden', 403); }
+-        const rows = await sql`SELECT a.id AS attempt_id, a.student_id, u.email AS student_email, up.full_name AS student_name, ca.title AS assignment_title, a.status, a.score, a.max_score, a.submitted_at FROM attempts a JOIN users u ON u.id = a.student_id LEFT JOIN user_profiles up ON u.id = u.id JOIN class_assignments ca ON ca.id = a.assignment_id WHERE ca.class_id = ${cid} ORDER BY a.submitted_at DESC NULLS LAST`;
++        const rows = await sql`SELECT a.id AS attempt_id, a.student_id, u.email AS student_email, up.full_name AS student_name, ca.title AS assignment_title, a.status, a.score, a.max_score, a.submitted_at FROM attempts a JOIN users u ON u.id = a.student_id LEFT JOIN user_profiles up ON up.user_id = u.id JOIN class_assignments ca ON ca.id = a.assignment_id WHERE ca.class_id = ${cid} ORDER BY a.submitted_at DESC NULLS LAST`;
+         if (csv) {
+           const hd = ['attempt_id','student_email','student_name','assignment_title','status','score','max_score','submitted_at'];
+           const lines = [hd.map(cesc).join(',')];
+@@ -463,7 +479,7 @@ async function dispatch(req: Request): Promise<Response> {
+       }
+       if (aid) {
+         if (s.role === 'TEACHER') { const asg = await sql`SELECT c.teacher_id FROM class_assignments ca JOIN classes c ON c.id=ca.class_id WHERE ca.id=${aid}`; if (!asg[0] || asg[0].teacher_id !== s.sub) return err('Forbidden', 403); }
+-        const rows = await sql`SELECT a.id, u.email AS student_email, up.full_name AS student_name, a.status, a.score, a.max_score, a.submitted_at FROM attempts a JOIN users u ON u.id = a.student_id LEFT JOIN user_profiles up ON u.id = u.id WHERE a.assignment_id = ${aid} ORDER BY a.submitted_at DESC NULLS LAST`;
++        const rows = await sql`SELECT a.id, u.email AS student_email, up.full_name AS student_name, a.status, a.score, a.max_score, a.submitted_at FROM attempts a JOIN users u ON u.id = a.student_id LEFT JOIN user_profiles up ON up.user_id = u.id WHERE a.assignment_id = ${aid} ORDER BY a.submitted_at DESC NULLS LAST`;
+         const tot = await sql`SELECT count(*) AS cnt FROM class_memberships WHERE class_id = (SELECT class_id FROM class_assignments WHERE id=${aid}) AND role='student'`;
+         return json({ assignment_id: aid, total_students: Number(tot[0].cnt), submissions: rows.length, results: rows });
+       }
+
+## lib/auth.js
+
+@@ -1,7 +1,8 @@
+ import * as jwt from 'jsonwebtoken';
+ import * as bcrypt from 'bcryptjs';
+ import { parse, serialize } from 'cookie';
+-export const AUTH_SECRET = process.env.AUTH_SECRET || 'dev-secret-change-me';
++export const AUTH_SECRET = process.env.AUTH_SECRET || (process.env.NODE_ENV === 'production' ? '' : 'dev-secret-change-me');
++if (!AUTH_SECRET) throw new Error('AUTH_SECRET is required in production');
+ export const COOKIE_NAME = 'frts_session';
+ export const COOKIE_MAX_AGE = 60 * 60 * 24 * 7; // 7 days
+ export async function hashPassword(password) {
+
+## migrations/003_html_module_source_session.sql
+
+@@ -0,0 +1,12 @@
++-- FRTS - Link generated HTML modules to their canonical learning session
++-- Version: 003_html_module_source_session
++
++ALTER TABLE html_modules
++  ADD COLUMN IF NOT EXISTS source_session_id TEXT;
++
++CREATE INDEX IF NOT EXISTS idx_html_modules_source_session
++  ON html_modules(source_session_id);
++
++INSERT INTO schema_migrations (version, applied_at)
++VALUES ('003_html_module_source_session', now())
++ON CONFLICT (version) DO NOTHING;
+
+## package.json
+
+@@ -7,7 +7,7 @@
+   "scripts": {
+     "dev": "vite",
+     "build": "tsc -b && vite build",
+-    "lint": "eslint src --ext .ts,.tsx --max-warnings 0 || true",
++    "lint": "eslint src --ext .ts,.tsx",
+     "test": "vitest run",
+     "migrate": "node scripts/migrate.js",
+     "import": "node scripts/import-questions.js",
+
+## scripts/generate_html.cjs
+
+@@ -226,8 +226,8 @@ function generateHTML(session) {
+       const checksum = crypto.createHash('sha256').update(htmlContent).digest('hex');
+ 
+       const moduleRes = await sql`
+-        INSERT INTO html_modules (id, title, description, version, content, checksum, uploaded_by, status, is_published, created_at, updated_at)
+-        VALUES (gen_random_uuid(), ${s.title}, ${s.title || null}, 1, ${htmlContent}, ${checksum}, ${adminId}, 'REVIEW_REQUIRED', false, now(), now())
++        INSERT INTO html_modules (id, title, description, source_session_id, version, content, checksum, uploaded_by, status, is_published, created_at, updated_at)
++        VALUES (gen_random_uuid(), ${s.title}, ${s.title || null}, ${s.source_session_id}, 1, ${htmlContent}, ${checksum}, ${adminId}, 'REVIEW_REQUIRED', false, now(), now())
+         RETURNING id, title, version, checksum
+       `;
+ 
+
+## src/App.tsx
+
+@@ -317,7 +317,7 @@ function AdminReview() {
+   const [items, setItems] = useState<any[]>([]);
+   const [busy, setBusy] = useState(false);
+   useEffect(() => { setBusy(true); getJSON('/api/html').then((d: any) => { const pending = (d.html_modules || []).filter((h: any) => h.status !== 'APPROVED'); setItems(pending); }).finally(() => setBusy(false)); }, []);
+-  async function setStatus(id: string, status: string) { await postJSON(`/api/html/${id}`, { status }); setItems(items.filter((i: any) => i.id !== id)); }
++  async function setStatus(id: string, status: string) { await getJSON(`/api/html/${id}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ status }) }); setItems(items.filter((i: any) => i.id !== id)); }
+   return (
+     <div className="page">
+       <h1 className="h1">Review Konten</h1>
