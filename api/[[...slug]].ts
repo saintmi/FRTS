@@ -579,9 +579,9 @@ async function dispatch(req: Request): Promise<Response> {
         if (asg.due_at && new Date(asg.due_at) < new Date()) return err('Batas waktu penugasan telah lewat.', 409, 'ASSIGNMENT_DEADLINE_PASSED');
         const inserted = await sql`INSERT INTO attempts (id, assignment_id, student_id, status, idempotency_key, started_at) VALUES (gen_random_uuid(), ${aid}, ${s.sub}, 'in_progress', ${ik}, now()) ON CONFLICT (assignment_id, student_id) DO NOTHING RETURNING id, assignment_id, student_id, status, idempotency_key, started_at`;
         if (inserted[0]) return json({ attempt: inserted[0] }, 201);
-        const existing = await sql`SELECT id, assignment_id, student_id, status, idempotency_key, started_at, score, max_score, submitted_at FROM attempts WHERE assignment_id = ${aid} AND student_id = ${s.sub}`;
-        if (!existing[0]) return err('Attempt could not be created. Please retry.', 409, 'ATTEMPT_CREATE_CONFLICT');
-        return json({ attempt: existing[0] });
+        const existingAfterConflict = await sql`SELECT id, assignment_id, student_id, status, idempotency_key, started_at, score, max_score, submitted_at FROM attempts WHERE assignment_id = ${aid} AND student_id = ${s.sub}`;
+        if (!existingAfterConflict[0]) return err('Attempt could not be created. Please retry.', 409, 'ATTEMPT_CREATE_CONFLICT');
+        return json({ attempt: existingAfterConflict[0] });
       });
     }
     return err('Method not allowed', 405);
