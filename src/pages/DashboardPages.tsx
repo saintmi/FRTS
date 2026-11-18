@@ -122,18 +122,56 @@ export function AdminUsersPage() {
 
 export function AdminClassesPage() {
   const [classes, setClasses] = useState<Row[]>([]);
+  const [teachers, setTeachers] = useState<Row[]>([]);
   const [busy, setBusy] = useState(true);
+  const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
-  const load = useCallback(async () => { setBusy(true); setError(''); try { const d = await getJSON('/api/classes'); setClasses(d.classes || []); } catch (e: any) { setError(e.message || 'Kelas gagal dimuat.'); } finally { setBusy(false); } }, []);
+  const [notice, setNotice] = useState('');
+  const [form, setForm] = useState({ name: '', description: '', teacher_id: '' });
+  const load = useCallback(async () => {
+    setBusy(true); setError('');
+    try {
+      const [c, u] = await Promise.all([getJSON('/api/classes'), getJSON('/api/users')]);
+      setClasses(c.classes || []);
+      const activeTeachers = (u.users || []).filter((user: Row) => user.role === 'TEACHER' && user.is_active);
+      setTeachers(activeTeachers);
+      setForm(old => ({ ...old, teacher_id: old.teacher_id || activeTeachers[0]?.id || '' }));
+    } catch (e: any) { setError(e.message || 'Kelas atau daftar guru gagal dimuat.'); }
+    finally { setBusy(false); }
+  }, []);
   useEffect(() => { void load(); }, [load]);
+  async function createClass(e: FormEvent) {
+    e.preventDefault(); setSaving(true); setError(''); setNotice('');
+    try {
+      await postJSON('/api/classes', form);
+      setForm(old => ({ ...old, name: '', description: '' }));
+      setNotice('Kelas berhasil dibuat dan ditetapkan kepada guru.');
+      await load();
+    } catch (e: any) { setError(e.message || 'Pembuatan kelas gagal.'); }
+    finally { setSaving(false); }
+  }
+  async function toggleClass(item: Row) {
+    setError(''); setNotice('');
+    try {
+      await putJSON('/api/classes/' + item.id, { is_active: !item.is_active });
+      setNotice(item.is_active ? 'Kelas dinonaktifkan.' : 'Kelas diaktifkan kembali.');
+      await load();
+    } catch (e: any) { setError(e.message || 'Status kelas gagal diperbarui.'); }
+  }
   return <div className="page dashboard-page">
-    <div className="page-heading"><div><h1 className="h1">Manajemen Kelas</h1><p className="muted">Pantau kelas seluruh guru dan jumlah siswa.</p></div><button className="secondary" onClick={load}>Muat ulang</button></div>
-    <ErrorNotice value={error} />
-    <div className="card">{busy ? <div className="spinner" /> : classes.length === 0 ? <Empty>Belum ada kelas.</Empty> :
-      <TableWrap><thead><tr><th>Kelas</th><th>Guru</th><th>Siswa</th><th>Status</th><th></th></tr></thead><tbody>{classes.map(c => <tr key={c.id}><td>{c.name}<div className="muted small">{c.description || ''}</div></td><td>{c.teacher_email || '—'}</td><td>{c.student_count || 0}</td><td>{c.is_active ? 'Aktif' : 'Nonaktif'}</td><td><Link to={'/teacher/classes/' + c.id}>Lihat</Link></td></tr>)}</tbody></TableWrap>}</div>
+    <div className="page-heading"><div><h1 className="h1">Manajemen Kelas</h1><p className="muted">Buat kelas, tetapkan guru, dan kelola status kelas seluruh platform.</p></div><button className="secondary" onClick={load} disabled={busy}>Muat ulang</button></div>
+    <ErrorNotice value={error} />{notice && <div className="alert success">{notice}</div>}
+    <form className="card form-grid" onSubmit={createClass}>
+      <h2 className="section-title full-row">Buat kelas baru</h2>
+      <div className="field"><label>Nama kelas</label><input value={form.name} onChange={e => setForm({ ...form, name: e.target.value })} required /></div>
+      <div className="field"><label>Guru penanggung jawab</label><select value={form.teacher_id} onChange={e => setForm({ ...form, teacher_id: e.target.value })} required><option value="">Pilih guru</option>{teachers.map(t => <option key={t.id} value={t.id}>{t.full_name || t.email} · {t.email}</option>)}</select></div>
+      <div className="field full-row"><label>Deskripsi</label><input value={form.description} onChange={e => setForm({ ...form, description: e.target.value })} /></div>
+      <div className="full-row"><button type="submit" disabled={saving || !form.teacher_id}>{saving ? 'Menyimpan…' : 'Buat kelas'}</button>{teachers.length === 0 && <p className="muted small">Belum ada akun guru aktif. Buat atau aktifkan akun TEACHER terlebih dahulu.</p>}</div>
+    </form>
+    <div className="card"><h2 className="section-title">Daftar kelas</h2>{busy ? <div className="spinner" /> : classes.length === 0 ? <Empty>Belum ada kelas.</Empty> :
+      <TableWrap><thead><tr><th>Kelas</th><th>Guru</th><th>Siswa</th><th>Status</th><th>Aksi</th></tr></thead><tbody>{classes.map(c => <tr key={c.id}><td>{c.name}<div className="muted small">{c.description || ''}</div></td><td>{c.teacher_email || '—'}</td><td>{c.student_count || 0}</td><td>{c.is_active ? 'Aktif' : 'Nonaktif'}</td><td className="action-cell"><Link to={'/teacher/classes/' + c.id}>Lihat</Link><button className={c.is_active ? 'danger' : 'secondary'} onClick={() => void toggleClass(c)}>{c.is_active ? 'Nonaktifkan' : 'Aktifkan'}</button></td></tr>)}</tbody></TableWrap>}</div>
   </div>;
 }
-
 export function AdminContentPage() {
   const [items, setItems] = useState<Row[]>([]);
   const [busy, setBusy] = useState(true);
