@@ -559,3 +559,16 @@ A separate isolated attempt fixture injected an audit failure by inserting an `a
 ## 21. Critical mutation/audit transaction refactor
 
 The following API mutation paths now execute business writes and audit inserts in one `sqlTransaction` batch: user create/update, class create/update, invite create/deactivate, HTML module upload (including version row), HTML module metadata/status update, publish/unpublish, and assignment create. The generic `writeAudit` helper no longer suppresses audit failures. Submission already writes finalization, receipt, and audit in one transaction. CI run `44532378300` passed on commit `86789a0fee293fe20ec7a098e8684a3e82966aee` after the refactor. The three remaining `writeAudit` calls are for LLM request telemetry and are not core business mutations; their policy still needs explicit review.
+
+
+## 22. Importer schema conflict-target gap found and closed (19 November 2026)
+
+Review of the actual Neon schema exposed that the importer used `ON CONFLICT` targets for canonical bank/session/stimulus/question/option identities, but the deployed schema did not yet define the corresponding unique indexes. Existing-row duplicate audits on the cloned test dataset returned zero for all five identity groups. Added migration `006_question_bank_import_identity_constraints.sql` to create the five matching unique indexes:
+
+- `(source_package, source_bank_id, package_version)` for question banks (partial where all source identity fields are present)
+- `(bank_id, source_session_id)` for learning sessions (partial where source session ID is present)
+- `(session_id, source_stimulus_id)` for stimuli (partial where source stimulus ID is present)
+- `(bank_id, source_question_id)` for questions (partial where source question ID is present)
+- `(question_id, sort_order)` for question options
+
+Migration 006 was executed in one transaction on disposable child branch `br-billowing-moon-ao18x47o`; all five index creations and its ledger insert succeeded. No parent/test shared branch or production database was modified. CI for the migration commit is pending. This closes the SQL `ON CONFLICT` prerequisite gap for the package importer, subject to end-to-end importer execution against the exact package manifest and runtime.
