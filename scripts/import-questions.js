@@ -5,6 +5,7 @@ import crypto from 'node:crypto';
 import { execSync } from 'node:child_process';
 import { neon } from '@neondatabase/serverless';
 import { selectCanonicalBankJson, validateBankSource } from './lib/question-bank-validation.js';
+import { importPackageAtomically } from './lib/package-importer.js';
 
 function stripBom(s) { return s.replace(/^\uFEFF/, ''); }
 function loadEnv() {
@@ -154,71 +155,28 @@ async function main() {
         continue;
       }
 
-      // Upsert bank (idempotent)
-      let bankRow = await sql`SELECT id FROM question_banks WHERE source_package = ${pkg.file} AND source_bank_id = ${norm.bank.source_bank_id} AND package_version = ${norm.bank.package_version}`;
-      if (!bankRow[0]) {
-        const ins = await sql`INSERT INTO question_banks (id, name, source_package, source_bank_id, package_version, status, total_questions, total_sessions, created_at)
-          VALUES (gen_random_uuid(), ${norm.bank.name}, ${norm.bank.source_package}, ${norm.bank.source_bank_id}, ${norm.bank.package_version}, ${norm.bank.status}, ${norm.totalQuestions}, 0, now())
-          RETURNING id`;
-        bankRow = ins;
+      // Package writes are committed as one transaction. Existing rows are
+      // compared against the source; any conflict aborts the entire package.
+      let bankRow = await sql`SELECT id, name, status, total_questions, total_sessions
+        FROM question_banks WHERE source_package = ${pkg.file}
+          AND source_bank_id = ${norm.bank.source_bank_id}
+          AND package_version = ${norm.bank.package_version}`;
+      if (bankRow[0]) {
+        if (String(bankRow[0].name) !== String(norm.bank.name) ||
+            String(bankRow[0].status) !== String(norm.bank.status)) {
+          throw new Error('Import conflict: existing question bank metadata differs from source.');
+        }
+      } else {
+        bankRow = await sql`INSERT INTO question_banks
+          (id, name, source_package, source_bank_id, package_version, status, total_questions, total_sessions, created_at)
+          VALUES (gen_random_uuid(), ${norm.bank.name}, ${pkg.file}, ${norm.bank.source_bank_id}, ${norm.bank.package_version}, ${norm.bank.status}, 0, 0, now())
+          RETURNING id, name, status, total_questions, total_sessions`;
       }
       const bankId = bankRow[0].id;
-
-      let bankSessions = 0, bankQuestions = 0;
-      const sessionMap = new Map();
-      for (const s of norm.sessions) {
-        let sr = await sql`SELECT id FROM learning_sessions WHERE bank_id = ${bankId} AND source_session_id = ${s.source_session_id}`;
-        if (!sr[0]) {
-          const ins = await sql`INSERT INTO learning_sessions (id, bank_id, source_session_id, week, session_no, title, total_questions, created_at)
-            VALUES (gen_random_uuid(), ${bankId}, ${s.source_session_id}, ${s.week}, ${s.session_no}, ${s.title}, ${s.total_questions}, now()) RETURNING id`;
-          sr = ins;
-        }
-        sessionMap.set(s.source_session_id, sr[0].id);
-        bankSessions++;
-      }
-      const stimulusMap = new Map();
-      for (const st of norm.stimuli) {
-        const sid = sessionMap.get(st.session_id);
-        if (!sid) continue;
-        let sr = await sql`SELECT id FROM stimuli WHERE session_id = ${sid} AND source_stimulus_id = ${st.source_stimulus_id}`;
-        if (!sr[0]) {
-          const ins = await sql`INSERT INTO stimuli (id, session_id, source_stimulus_id, content, content_type, created_at)
-            VALUES (gen_random_uuid(), ${sid}, ${st.source_stimulus_id}, ${st.content}, ${st.content_type}, now()) RETURNING id`;
-          sr = ins;
-        }
-        stimulusMap.set(st.source_stimulus_id, sr[0].id);
-      }
-      for (const q of norm.questions) {
-        const sid = sessionMap.get(q.session_id);
-        let qr = await sql`SELECT id FROM questions WHERE bank_id = ${bankId} AND source_question_id = ${q.source_question_id}`;
-        if (!qr[0]) {
-          const stimId = q.stimulus_id ? stimulusMap.get(q.stimulus_id) : null;
-          const ins = await sql`INSERT INTO questions (id, bank_id, session_id, stimulus_id, source_question_id, type, prompt, points, status, created_at)
-            VALUES (gen_random_uuid(), ${bankId}, ${sid || null}, ${stimId || null}, ${q.source_question_id}, ${q.type}, ${q.prompt}, ${q.points}, ${q.status}, now()) RETURNING id`;
-          qr = ins;
-        }
-        const qId = qr[0].id;
-        bankQuestions++;
-        for (const o of norm.options.filter(x => x.question_source_id === q.source_question_id)) {
-          let or = await sql`SELECT id FROM question_options WHERE question_id = ${qId} AND sort_order = ${o.sort_order}`;
-          if (!or[0]) {
-            await sql`INSERT INTO question_options (id, question_id, label, text, is_correct, sort_order, created_at)
-              VALUES (gen_random_uuid(), ${qId}, ${o.label}, ${o.text}, ${o.is_correct}, ${o.sort_order}, now())`;
-          }
-        }
-        const key = norm.answerKeys.find(k => k.question_source_id === q.source_question_id);
-        if (key) {
-          let kr = await sql`SELECT id FROM question_answer_keys WHERE question_id = ${qId}`;
-          if (!kr[0]) {
-            await sql`INSERT INTO question_answer_keys (id, question_id, answer, explanation, created_at)
-              VALUES (gen_random_uuid(), ${qId}, ${JSON.stringify(key.answer)}, ${key.explanation}, now())`;
-          }
-        }
-      }
-
-      await sql`UPDATE question_banks SET total_sessions = ${bankSessions}, total_questions = ${bankQuestions} WHERE id = ${bankId}`;
-      await sql`INSERT INTO content_imports (id, package_name, package_version, status, total_questions, total_sessions, imported_questions, report, created_at)
-        VALUES (gen_random_uuid(), ${pkg.file}, ${pkg.bankVersion}, 'COMPLETED', ${norm.totalQuestions}, ${bankSessions}, ${bankQuestions}, ${JSON.stringify({ sessions: norm.sessions.length, questions: norm.questions.length })}, now())`;
+      const pkgMeta = { file: pkg.file, sha256: archiveSha256 };
+      const result = await importPackageAtomically(sql, bankId, norm, pkgMeta);
+      const bankSessions = result.sessions;
+      const bankQuestions = result.questions;
 
       report.packages.push({ package: pkg.file, status: 'IMPORTED', bank_id: norm.bank.source_bank_id, bank_version: norm.bank.package_version, sha256: archiveSha256, sessions: bankSessions, questions: bankQuestions });
       report.total_sessions += bankSessions;
