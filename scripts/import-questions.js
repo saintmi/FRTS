@@ -39,18 +39,52 @@ function extractZip(zipPath, destDir) {
 }
 
 function findBankJson(dir) {
-  let result = null;
+  const matches = [];
   function walk(d) {
     for (const entry of fs.readdirSync(d, { withFileTypes: true })) {
       const full = path.join(d, entry.name);
       if (entry.isDirectory()) { walk(full); continue; }
-      if (entry.name.toLowerCase().endsWith('.json') && entry.name.toLowerCase().includes('question_bank')) {
-        result = full;
-      }
+      if (entry.name.toLowerCase().endsWith('.json') && entry.name.toLowerCase().includes('question_bank')) matches.push(full);
     }
   }
   walk(dir);
-  return result;
+  if (matches.length !== 1) {
+    throw new Error(`Expected exactly one canonical question_bank JSON; found ${matches.length}.`);
+  }
+  return matches[0];
+}
+
+function validateBankSource(bankRaw, expectedVersion) {
+  const errors = [];
+  if (!bankRaw || typeof bankRaw !== 'object' || !bankRaw.bank_id) errors.push('bank_id is required');
+  if (String(bankRaw?.bank_version || expectedVersion) !== String(expectedVersion)) errors.push(`bank_version mismatch: expected ${expectedVersion}, got ${bankRaw?.bank_version}`);
+  if (!Array.isArray(bankRaw?.sessions) || bankRaw.sessions.length === 0) errors.push('sessions must be a non-empty array');
+  const sessionIds = new Set(), questionIds = new Set(), stimulusIds = new Set();
+  for (const session of bankRaw?.sessions || []) {
+    if (!session?.session_id || sessionIds.has(String(session.session_id))) errors.push(`missing or duplicate session_id: ${session?.session_id}`);
+    sessionIds.add(String(session?.session_id || ''));
+    const localStimuli = new Set();
+    for (const stimulus of session?.stimuli || []) {
+      const id = String(stimulus?.id || '');
+      if (!id || stimulusIds.has(id)) errors.push(`missing or duplicate stimulus id: ${id}`);
+      stimulusIds.add(id); localStimuli.add(id);
+      if (typeof stimulus?.text !== 'string' || !stimulus.text.trim()) errors.push(`stimulus text missing: ${id}`);
+    }
+    for (const question of session?.questions || []) {
+      const id = String(question?.id || '');
+      if (!id || questionIds.has(id)) errors.push(`missing or duplicate question id: ${id}`);
+      questionIds.add(id);
+      if (question?.stimulus_id && !localStimuli.has(String(question.stimulus_id))) errors.push(`question ${id} references a missing stimulus in session ${session.session_id}`);
+      const options = question?.student?.options || [];
+      const labels = options.map(option => String(option?.value || '').toUpperCase());
+      if (labels.length !== 4 || ['A','B','C','D'].some(label => labels.filter(value => value === label).length !== 1)) errors.push(`question ${id} must have exactly one A/B/C/D option`);
+      const correctValue = question?.teacher_only?.correct_value;
+      if (correctValue == null || !labels.includes(String(correctValue).toUpperCase())) errors.push(`question ${id} has no valid teacher_only.correct_value`);
+      if (!question?.student || typeof question.student.question !== 'string' || !question.student.question.trim()) errors.push(`question ${id} has no student-facing prompt`);
+    }
+  }
+  if (errors.length) throw new Error('Source preflight failed: ' + errors.slice(0, 30).join('; '));
+  return { sessions: sessionIds.size, questions: questionIds.size, stimuli: stimulusIds.size };
 }
 
 function mapBankStatus(raw) {
@@ -144,10 +178,12 @@ async function main() {
         continue;
       }
       const bankRaw = JSON.parse(stripBom(fs.readFileSync(bankJson, 'utf8')));
-      const norm = normalizeBank(bankRaw, pkg.file, pkg.bankVersion);
+      const sourceCounts = validateBankSource(bankRaw, packageVersionArg || pkg.bankVersion);
+      const archiveSha256 = crypto.createHash('sha256').update(fs.readFileSync(zipPath)).digest('hex');
+      const norm = normalizeBank(bankRaw, pkg.file, packageVersionArg || pkg.bankVersion);
 
       if (DRY_RUN) {
-        report.packages.push({ package: pkg.file, status: 'DRY_RUN', sessions: norm.sessions.length, questions: norm.questions.length });
+        report.packages.push({ package: pkg.file, status: 'DRY_RUN', bank_id: norm.bank.source_bank_id, bank_version: norm.bank.package_version, sha256: archiveSha256, ...sourceCounts });
         report.total_sessions += norm.sessions.length;
         report.total_questions += norm.questions.length;
         continue;
@@ -219,7 +255,7 @@ async function main() {
       await sql`INSERT INTO content_imports (id, package_name, package_version, status, total_questions, total_sessions, imported_questions, report, created_at)
         VALUES (gen_random_uuid(), ${pkg.file}, ${pkg.bankVersion}, 'COMPLETED', ${norm.totalQuestions}, ${bankSessions}, ${bankQuestions}, ${JSON.stringify({ sessions: norm.sessions.length, questions: norm.questions.length })}, now())`;
 
-      report.packages.push({ package: pkg.file, status: 'IMPORTED', bank_id: norm.bank.source_bank_id, sessions: bankSessions, questions: bankQuestions });
+      report.packages.push({ package: pkg.file, status: 'IMPORTED', bank_id: norm.bank.source_bank_id, bank_version: norm.bank.package_version, sha256: archiveSha256, sessions: bankSessions, questions: bankQuestions });
       report.total_sessions += bankSessions;
       report.total_questions += norm.totalQuestions;
       report.imported_questions += bankQuestions;
