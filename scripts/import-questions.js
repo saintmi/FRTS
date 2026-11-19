@@ -4,6 +4,7 @@ import os from 'node:os';
 import crypto from 'node:crypto';
 import { execSync } from 'node:child_process';
 import { neon } from '@neondatabase/serverless';
+import { selectCanonicalBankJson, validateBankSource } from './lib/question-bank-validation.js';
 
 function stripBom(s) { return s.replace(/^\uFEFF/, ''); }
 function loadEnv() {
@@ -48,43 +49,7 @@ function findBankJson(dir) {
     }
   }
   walk(dir);
-  if (matches.length !== 1) {
-    throw new Error(`Expected exactly one canonical question_bank JSON; found ${matches.length}.`);
-  }
-  return matches[0];
-}
-
-function validateBankSource(bankRaw, expectedVersion) {
-  const errors = [];
-  if (!bankRaw || typeof bankRaw !== 'object' || !bankRaw.bank_id) errors.push('bank_id is required');
-  if (String(bankRaw?.bank_version || expectedVersion) !== String(expectedVersion)) errors.push(`bank_version mismatch: expected ${expectedVersion}, got ${bankRaw?.bank_version}`);
-  if (!Array.isArray(bankRaw?.sessions) || bankRaw.sessions.length === 0) errors.push('sessions must be a non-empty array');
-  const sessionIds = new Set(), questionIds = new Set(), stimulusIds = new Set();
-  for (const session of bankRaw?.sessions || []) {
-    if (!session?.session_id || sessionIds.has(String(session.session_id))) errors.push(`missing or duplicate session_id: ${session?.session_id}`);
-    sessionIds.add(String(session?.session_id || ''));
-    const localStimuli = new Set();
-    for (const stimulus of session?.stimuli || []) {
-      const id = String(stimulus?.id || '');
-      if (!id || stimulusIds.has(id)) errors.push(`missing or duplicate stimulus id: ${id}`);
-      stimulusIds.add(id); localStimuli.add(id);
-      if (typeof stimulus?.text !== 'string' || !stimulus.text.trim()) errors.push(`stimulus text missing: ${id}`);
-    }
-    for (const question of session?.questions || []) {
-      const id = String(question?.id || '');
-      if (!id || questionIds.has(id)) errors.push(`missing or duplicate question id: ${id}`);
-      questionIds.add(id);
-      if (question?.stimulus_id && !localStimuli.has(String(question.stimulus_id))) errors.push(`question ${id} references a missing stimulus in session ${session.session_id}`);
-      const options = question?.student?.options || [];
-      const labels = options.map(option => String(option?.value || '').toUpperCase());
-      if (labels.length !== 4 || ['A','B','C','D'].some(label => labels.filter(value => value === label).length !== 1)) errors.push(`question ${id} must have exactly one A/B/C/D option`);
-      const correctValue = question?.teacher_only?.correct_value;
-      if (correctValue == null || !labels.includes(String(correctValue).toUpperCase())) errors.push(`question ${id} has no valid teacher_only.correct_value`);
-      if (!question?.student || typeof question.student.question !== 'string' || !question.student.question.trim()) errors.push(`question ${id} has no student-facing prompt`);
-    }
-  }
-  if (errors.length) throw new Error('Source preflight failed: ' + errors.slice(0, 30).join('; '));
-  return { sessions: sessionIds.size, questions: questionIds.size, stimuli: stimulusIds.size };
+  return selectCanonicalBankJson(matches);
 }
 
 function mapBankStatus(raw) {
