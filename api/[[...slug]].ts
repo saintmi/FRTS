@@ -95,7 +95,7 @@ async function dispatch(req: Request): Promise<Response> {
     return await withAuth(req, async (r, s) => {
       const apiKey = process.env.LLM_API_KEY || process.env.AI_GATEWAY_API_KEY;
       const model = process.env.LLM_MODEL;
-      const baseUrl = (process.env.LLM_BASE_URL || 'https://ai-gateway.vercel.sh/v1').replace(/\\/+$/, '');
+      const baseUrl = (process.env.LLM_BASE_URL || 'https://ai-gateway.vercel.sh/v1').replace(/\/+$/, '');
       if (!apiKey || !model) return err('Layanan AI belum dikonfigurasi oleh administrator.', 503, 'LLM_NOT_CONFIGURED');
       const b = await getBody(r);
       const feature = String(b?.feature || 'tutor');
