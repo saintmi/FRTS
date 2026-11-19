@@ -643,3 +643,52 @@ Owner context: the user previously stated that Batch 1 had been manually checked
 **Importer compatibility remains a separate engineering gate:** the current repository importer expects a single `question_bank*.json` with embedded `teacher_only.correct_value` objects. The v0.6.1 archive instead separates student questions from teacher keys (`legacy_official_keys` and `new_proposed_keys`), and the 104 latter keys carry the source status `PROPOSED_NEW_KEY_TEACHER_APPROVAL_REQUIRED`. Do not silently treat those as official keys or feed the student-only JSON directly into the legacy importer. Implement/test an explicit adapter preserving the separate key status, or import the bank in review/formative mode without promoting proposed keys to official scoring.
 
 The archive is available for continued test work. Its absence from the repository's `content/imports` directory is no longer a reason to block source retrieval; it remains a repository packaging/configuration issue only if the CLI is required to read the ZIP from that exact path.
+
+
+## 28. Batch 1 split-key adapter and CI verification (20 November 2026)
+
+### Exact archive revalidation
+
+The existing Batch 1 v0.6.1 ZIP was re-extracted from the already available local archive; no replacement upload or academic-content modification was made. The package validator was rerun and exited 0:
+
+`PASS: 8 sessions, 200 unique questions, 120 unique stimuli, 96 legacy + 104 proposed keys, evidence links, student/teacher separation, responsive/print/persistence HTML.`
+
+A separate cross-file reconciliation was also run against the exact student and teacher JSON files:
+- 8 sessions, 200 unique question IDs, 120 stimuli.
+- 96 `OFFICIAL_SOURCE_KEY_PRESERVED` records.
+- 104 `PROPOSED_NEW_KEY_TEACHER_APPROVAL_REQUIRED` records.
+- All 200 key question IDs are unique and cover all 200 student questions exactly once.
+- Every teacher key's session ID and stimulus ID matches its student question.
+- Every `correct_option` exists exactly in the corresponding A/B/C/D options.
+- Cross-file reconciliation errors: 0.
+
+### Repository implementation
+
+Added `scripts/lib/vocabulary-first-adapter.js` and `tests/vocabulary-first-adapter.test.ts`. The adapter:
+- Accepts the separate student bank and teacher-key JSON files.
+- Requires the exact Batch 1 bank identity/version and expected counts.
+- Validates question/session/stimulus references, unique IDs, option structure, key status, disjoint key sets, and complete 200-item key disposition.
+- Imports only the 96 source-verified keys into the official answer-key path.
+- Keeps all 104 proposed keys out of official scoring and reports their count, IDs, status, and review-only import mode.
+- Marks the bank `REVIEW_REQUIRED` and every imported question `DRAFT`.
+- Adds the key-disposition summary to the private `content_imports.report` metadata; no proposed answer is promoted into `question_answer_keys`.
+
+Updated `scripts/import-questions.js` to detect the two exact v0.6.1 filenames, route through the adapter, default that archive to version 0.6.1, and use a cross-platform ZIP extraction path. Legacy package handling remains available. The non-dry-run exact-package SHA/identity approval manifest gate remains mandatory; no manifest approval was fabricated and no import was run.
+
+### CI
+
+GitHub Actions run `44616156526` on commit `2e61780fb51bc8771cb7c43ba904ef907aae12a1`: **PASS**.
+- Lint: 0 errors, 93 existing warnings.
+- TypeScript + Vite production build: PASS.
+- Vitest: **44/44 PASS**, 7 files, including the new 5-case Vocabulary-First adapter suite.
+
+### Remaining acceptance blockers
+
+This adapter and CI run do not close the following independent gates:
+1. No explicit exact-archive import approval manifest exists; the importer correctly refuses non-dry-run import without it.
+2. The actual Node migration CLI has not been executed end-to-end with the installed Neon serverless driver against a disposable fresh schema. SQL transaction behavior and migration statements have prior isolated database evidence, but not the complete Node CLI runtime.
+3. Authenticated HTTP student/teacher/admin workflows and two concurrent authenticated HTTP submissions have not been exercised against an isolated Neon database. Existing role tests are mocked; prior concurrency tests prove the database locking pattern only.
+4. The current disposable Neon child is cloned from a previously migrated test branch, so it does not prove the migration-006 clean-schema branch with no equivalent option index. No destructive schema reset was run.
+5. Teacher approval for the 104 proposed keys and formal academic sign-off remain separate from the user's manual validation of the learning materials. No unapproved key has been promoted.
+
+**Decision:** Phase 0 remains `ACCEPTANCE_BLOCKED`. PR #3 remains Draft and unmerged. No production migration, content import, or production data write was performed.
