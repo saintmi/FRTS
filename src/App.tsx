@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { Routes, Route, Link, Navigate, useNavigate, useParams } from 'react-router-dom';
+import { Routes, Route, Link, Navigate, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { AuthProvider, useAuth } from './contexts/AuthContext';
 import { getJSON, postJSON, postForm } from './lib/apiClient';
 import { AdminDashboardPage, AdminUsersPage, AdminClassesPage, AdminContentPage, AdminReviewPage, AdminAuditPage, AdminReportsPage, TeacherDashboardPage, TeacherHtmlBankPage, TeacherReportsPage, StudentDashboardPage, AssessmentViewerPage, LlmAssistantPage } from './pages/DashboardPages';
@@ -33,7 +33,7 @@ function htmlPreviewUrl(id: string) { return '/api/html/' + id; }
 function htmlClassRow(c: any) {
   return (
     <tr key={c.id}>
-      <td><Link to={"/teacher/classes/" + c.id}>{c.name}</Link></td>
+      <td><Link to={"/classes/" + c.id}>{c.name}</Link></td>
       <td>{c.description || '-'}</td>
       <td>{c.teacher_email || '-'}</td>
       <td>{c.student_count}</td>
@@ -97,6 +97,7 @@ export default function App() {
           <Route path="/teacher" element={<RoleGate roles={['TEACHER','ADMIN']}><TeacherDashboardPage /></RoleGate>} />
           <Route path="/teacher/classes" element={<RoleGate roles={['TEACHER','ADMIN']}><TeacherClasses /></RoleGate>} />
           <Route path="/teacher/classes/new" element={<RoleGate roles={['TEACHER','ADMIN']}><ClassCreate /></RoleGate>} />
+          <Route path="/classes/:id" element={<RoleGate roles={['TEACHER','ADMIN','STUDENT']}><ClassDetail /></RoleGate>} />
           <Route path="/teacher/classes/:id" element={<RoleGate roles={['TEACHER','ADMIN','STUDENT']}><ClassDetail /></RoleGate>} />
           <Route path="/teacher/html-library" element={<RoleGate roles={['TEACHER','ADMIN']}><HtmlLibrary /></RoleGate>} />
           <Route path="/teacher/html-bank" element={<RoleGate roles={['TEACHER','ADMIN']}><TeacherHtmlBankPage /></RoleGate>} />
@@ -292,7 +293,7 @@ function ClassDetail() {
         <>
           <div className="card"><h2 className="h1" style={{ fontSize: '1.1rem', marginBottom: '0.5rem' }}>Kode Undangan</h2>
             {invite ? (
-              <div className="row"><div className="col"><strong>{invite.code}</strong></div><div className="muted small">Aktif: {invite.is_active ? 'Ya' : 'Tidak'} | Digunakan: {invite.used_count}{invite.max_uses !== null ? `/${invite.max_uses}` : ''} | Expired: {invite.expires_at || '-'}</div><button className="secondary" type="button" onClick={() => setInvite(null)}>Buat kode baru</button>{invite.is_active && <button className="danger" type="button" onClick={deactivateInvite} disabled={busy}>Nonaktifkan kode</button>}</div>
+              <div className="row"><div className="col"><strong>{invite.code}</strong><div className="small"><Link to={'/student/classes?code=' + encodeURIComponent(invite.code)}>Tautan untuk siswa</Link></div></div><div className="muted small">Aktif: {invite.is_active ? 'Ya' : 'Tidak'} | Digunakan: {invite.used_count}{invite.max_uses !== null ? `/${invite.max_uses}` : ''} | Expired: {invite.expires_at || '-'}</div><button className="secondary" type="button" onClick={() => setInvite(null)}>Buat kode baru</button>{invite.is_active && <button className="danger" type="button" onClick={deactivateInvite} disabled={busy}>Nonaktifkan kode</button>}</div>
             ) : (
               <form onSubmit={(e) => { e.preventDefault(); genInvite(); }} className="row" style={{ gap: '0.5rem' }}>
                 <input value={newCode} onChange={e => setNewCode(e.target.value)} placeholder="Kode (kosongkan untuk otomatis)" />
@@ -336,7 +337,7 @@ function ClassDetail() {
       )}
       {!canManage && (
         <div className="card"><h2 className="h1" style={{ fontSize: '1.1rem', marginBottom: '0.5rem' }}>Detail Kelas</h2>
-          <p className="muted">Anda adalah anggota kelas ini.</p><div className="field"><label>Kode undangan</label><input readOnly value={invite?.code || '-'} /></div></div>
+          <p className="muted">Anda adalah anggota kelas ini.</p></div>
       )}
     </div>
   );
@@ -430,7 +431,8 @@ function HtmlPublish() {
 function StudentClasses() {
   const { isRole } = useAuth();
   const [classes, setClasses] = useState<any[]>([]);
-  const [code, setCode] = useState('');
+  const [searchParams] = useSearchParams();
+  const [code, setCode] = useState(searchParams.get('code') || '');
   const [err, setErr] = useState('');
   const [busy, setBusy] = useState(false);
   useEffect(() => { if (isRole('STUDENT')) { getJSON('/api/classes').then((d: any) => setClasses(d.classes || [])).catch(() => {}); } }, [isRole]);
