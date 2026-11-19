@@ -727,11 +727,42 @@ async function dispatch(req: Request): Promise<Response> {
           }
           const rid = ik || cryptoRandBytes(4).toString('hex');
           const vocabularyPayload = { vocabulary_responses: b?.vocabulary_responses || {}, vocabulary_self_assessment: b?.vocabulary_self_assessment || {}, source_session_id: sourceSessionId, assessment_status: 'FORMATIVE_NOT_GRADED' };
-          if (Object.keys(vocabularyPayload.vocabulary_responses).length || Object.keys(vocabularyPayload.vocabulary_self_assessment).length) transactionQueries.push(sql`INSERT INTO attempt_events (id, attempt_id, event_type, payload, created_at) VALUES (gen_random_uuid(), ${id}, 'VOCABULARY_RECALL_REPORT', ${JSON.stringify(vocabularyPayload)}, now())`);
-          transactionQueries.push(sql`UPDATE attempts SET status = 'submitted', score = ${ts}, max_score = ${ms}, submitted_at = now() WHERE id = ${id}`);
-          transactionQueries.push(sql`INSERT INTO submission_receipts (id, attempt_id, receipt_id, submitted_at) VALUES (gen_random_uuid(), ${id}, ${rid}, now())`);
-          await sqlTransaction(transactionQueries);
-          await writeAudit(s, 'ATTEMPT_SUBMITTED', 'attempt', id, { source_session_id: sourceSessionId, score: ts, max_score: ms });
+          // Serialize competing submissions on the attempt row. Every write after
+          // the lock is guarded by the in_progress -> submitting claim.
+          transactionQueries.unshift(sql`SELECT id FROM attempts WHERE id = ${id} FOR UPDATE`);
+          transactionQueries.push(sql`UPDATE attempts SET status = 'submitting' WHERE id = ${id} AND status = 'in_progress' RETURNING id`);
+          // Guard answer writes so a request that lost the claim cannot append data.
+          // Rebuild answer inserts as INSERT .. SELECT guarded by the claim state.
+          const answerCount = ar.length;
+          for (let i = 0; i < answerCount; i++) {
+            const qid = String(ans[i].question_id || '');
+            const q = sourceSessionId ? sourceQuestionMap.get(qid) : legacyQuestionMap.get(qid);
+            const av = ans[i].answer;
+            const row = ar[i];
+            transactionQueries[i + 1] = sql`INSERT INTO attempt_answers (id, attempt_id, question_id, answer, is_correct, points_earned, created_at)
+              SELECT gen_random_uuid(), ${id}, ${q.id}, ${JSON.stringify(av)}, ${row.is_correct}, ${row.points_earned}, now()
+              WHERE EXISTS (SELECT 1 FROM attempts WHERE id = ${id} AND status = 'submitting')`;
+          }
+          if (Object.keys(vocabularyPayload.vocabulary_responses).length || Object.keys(vocabularyPayload.vocabulary_self_assessment).length) transactionQueries.push(sql`INSERT INTO attempt_events (id, attempt_id, event_type, payload, created_at)
+            SELECT gen_random_uuid(), ${id}, 'VOCABULARY_RECALL_REPORT', ${JSON.stringify(vocabularyPayload)}, now()
+            WHERE EXISTS (SELECT 1 FROM attempts WHERE id = ${id} AND status = 'submitting')`);
+          transactionQueries.push(sql`UPDATE attempts SET status = 'submitted', score = ${ts}, max_score = ${ms}, submitted_at = now() WHERE id = ${id} AND status = 'submitting' RETURNING id`);
+          transactionQueries.push(sql`INSERT INTO submission_receipts (id, attempt_id, receipt_id, submitted_at)
+            SELECT gen_random_uuid(), ${id}, ${rid}, now()
+            WHERE EXISTS (SELECT 1 FROM attempts WHERE id = ${id} AND status = 'submitted')`);
+          transactionQueries.push(sql`INSERT INTO audit_logs (id, actor_id, actor_email, action, entity_type, entity_id, metadata, created_at)
+            SELECT gen_random_uuid(), ${s.sub}, ${s.email}, 'ATTEMPT_SUBMITTED', 'attempt', ${id}, ${JSON.stringify({ source_session_id: sourceSessionId, score: ts, max_score: ms })}, now()
+            WHERE EXISTS (SELECT 1 FROM submission_receipts WHERE attempt_id = ${id} AND receipt_id = ${rid})`);
+          const txResults = await sqlTransaction(transactionQueries);
+          const finalized = txResults[txResults.length - 3];
+          if (!finalized?.length) {
+            const existingReceipt = ik ? await sql`SELECT receipt_id FROM submission_receipts WHERE attempt_id = ${id} AND receipt_id = ${ik}` : [];
+            if (existingReceipt[0]) {
+              const current = await sql`SELECT score, max_score, status, submitted_at FROM attempts WHERE id = ${id}`;
+              return json({ attempt: { id, ...current[0] }, duplicate: true });
+            }
+            return err('Attempt has already been submitted or is being submitted.', 409, 'ATTEMPT_ALREADY_SUBMITTED');
+          }
           return json({ attempt: { id, score: ts, max_score: ms, status: 'submitted', submitted_at: new Date().toISOString() }, answers: ar, receipt_id: rid });
         } catch (e) { throw e; }
       });
