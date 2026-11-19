@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { neon } from '@neondatabase/serverless';
 import { splitStatements } from './lib/sql-splitter.js';
-import { buildMigrationTransaction } from './lib/transaction-builders.js';
+import { applyMigrationAtomically } from './lib/transaction-builders.js';
 
 function stripBom(s) { return s.replace(/^\uFEFF/, ''); }
 
@@ -46,9 +46,9 @@ async function main() {
     // Execute every statement and the ledger write in one Neon transaction.
     // A failed statement must roll back the entire migration rather than leave
     // partially-applied DDL with no schema_migrations record.
-    const transactionQueries = buildMigrationTransaction(sql, statements, version);
+
     try {
-      await sql.transaction(transactionQueries);
+      await applyMigrationAtomically(sql, statements, version);
     } catch (e) {
       console.error(`  ERROR in atomic migration ${file}:`, e.message);
       console.error(`  MIGRATION ROLLED BACK; ledger was not advanced.`);
