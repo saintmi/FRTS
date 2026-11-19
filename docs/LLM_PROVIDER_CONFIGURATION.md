@@ -1,3 +1,5 @@
+> **Legacy integration reference.** This documents the initial generic chat endpoint and its historical role/feature catalogue. It is not the current product AI specification. Current AI priorities, permitted use cases, and cost/privacy requirements are defined in [FRTS Product Master Specification](./FRTS_PRODUCT_MASTER_SPEC.md) and [Learning Intelligence Specification](./LEARNING_INTELLIGENCE_SPEC.md). Do not expand the student chatbot catalogue without updating and obtaining approval for the product specifications.
+
 # FRTS LLM Provider Configuration
 
 FRTS uses a provider-neutral chat contract. The first deployment adapter uses Vercel AI Gateway's OpenAI-compatible Chat Completions endpoint. The application sends one model identifier and one server-side credential; model/provider changes do not require frontend changes.
