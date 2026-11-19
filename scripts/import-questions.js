@@ -61,6 +61,28 @@ function mapBankStatus(raw) {
   return 'IMPORTED';
 }
 
+function assertApprovedPackage(manifestPath, packageFile, sha256, bankId, bankVersion) {
+  if (!fs.existsSync(manifestPath)) {
+    throw new Error('Approved package manifest is missing. Create content/imports/approved-package-manifest.json before any non-dry-run import.');
+  }
+  const manifest = JSON.parse(stripBom(fs.readFileSync(manifestPath, 'utf8')));
+  const approval = manifest?.packages?.[packageFile];
+  if (!approval || approval.approval_status !== 'APPROVED') {
+    throw new Error('Package is not explicitly approved in the package manifest: ' + packageFile);
+  }
+  if (String(approval.sha256 || '').toLowerCase() !== sha256.toLowerCase()) {
+    throw new Error('Package SHA-256 does not match the approved manifest: ' + packageFile);
+  }
+  if (String(approval.bank_id || '') !== String(bankId) ||
+      String(approval.bank_version || '') !== String(bankVersion)) {
+    throw new Error('Bank identity/version does not match the approved manifest: ' + packageFile);
+  }
+  if (!approval.approved_by || !approval.approved_at) {
+    throw new Error('Manifest approval must include approved_by and approved_at: ' + packageFile);
+  }
+  return approval;
+}
+
 function normalizeBank(bankRaw, sourcePackage, packageVersion) {
   const bank = {
     source_bank_id: bankRaw.bank_id,
@@ -155,24 +177,16 @@ async function main() {
         continue;
       }
 
-      // Package writes are committed as one transaction. Existing rows are
-      // compared against the source; any conflict aborts the entire package.
-      let bankRow = await sql`SELECT id, name, status, total_questions, total_sessions
-        FROM question_banks WHERE source_package = ${pkg.file}
-          AND source_bank_id = ${norm.bank.source_bank_id}
-          AND package_version = ${norm.bank.package_version}`;
-      if (bankRow[0]) {
-        if (String(bankRow[0].name) !== String(norm.bank.name) ||
-            String(bankRow[0].status) !== String(norm.bank.status)) {
-          throw new Error('Import conflict: existing question bank metadata differs from source.');
-        }
-      } else {
-        bankRow = await sql`INSERT INTO question_banks
-          (id, name, source_package, source_bank_id, package_version, status, total_questions, total_sessions, created_at)
-          VALUES (gen_random_uuid(), ${norm.bank.name}, ${pkg.file}, ${norm.bank.source_bank_id}, ${norm.bank.package_version}, ${norm.bank.status}, 0, 0, now())
-          RETURNING id, name, status, total_questions, total_sessions`;
-      }
-      const bankId = bankRow[0].id;
+      // A non-dry-run import is permitted only when owner-approved exact
+      // package bytes and source bank identity are allowlisted.
+      const manifestPath = path.join(IMPORTS_DIR, 'approved-package-manifest.json');
+      assertApprovedPackage(
+        manifestPath,
+        pkg.file,
+        archiveSha256,
+        norm.bank.source_bank_id,
+        norm.bank.package_version
+      );
       const pkgMeta = { file: pkg.file, sha256: archiveSha256 };
       await importPackageAtomically(sql, norm, pkgMeta);
       const bankSessions = norm.sessions.length;
