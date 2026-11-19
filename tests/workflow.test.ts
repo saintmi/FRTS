@@ -32,6 +32,7 @@ describe('FRTS API entrypoint', () => {
     ['GET', '/api/attempts'],
     ['GET', '/api/reports'],
     ['GET', '/api/audit'],
+    ['POST', '/api/llm/chat'],
   ])('%s %s rejects unauthenticated access before touching the database', async (method, path) => {
     const response = method === 'POST'
       ? await POST(request(path, method, {}))
