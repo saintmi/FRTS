@@ -534,10 +534,17 @@ async function dispatch(req: Request): Promise<Response> {
           if (existing[0]) return err('Sesi ini sudah terdaftar di bank HTML', 409, 'SESSION_ALREADY_IMPORTED');
         }
         const initialStatus = sourceSessionId ? 'REVIEW_REQUIRED' : 'DRAFT';
-        const rows = await sql`INSERT INTO html_modules (id, title, description, version, content, checksum, uploaded_by, source_bank_id, source_bank_version, source_session_id, status, is_published, created_at, updated_at) VALUES (gen_random_uuid(), ${title || file.name}, ${desc}, 1, ${content}, ${checksum}, ${s.sub}, ${sourceBankId}, ${sourceBankVersion}, ${sourceSessionId}, ${initialStatus}, false, now(), now()) RETURNING id, title, description, version, checksum, status, is_published, source_bank_id, source_bank_version, source_session_id, created_at`;
-        const mod = rows[0];
-        await sql`INSERT INTO html_module_versions (id, module_id, version, content, checksum, uploaded_by, created_at) VALUES (gen_random_uuid(), ${mod.id}, 1, ${content}, ${checksum}, ${s.sub}, now())`;
-        await writeAudit(s, 'HTML_MODULE_UPLOADED', 'html_module', mod.id, { title: mod.title, source_bank_id: sourceBankId, source_bank_version: sourceBankVersion, source_session_id: sourceSessionId, status: mod.status });
+        const moduleId = crypto.randomUUID();
+        const versionId = crypto.randomUUID();
+        const txResults = await sqlTransaction([
+          sql`INSERT INTO html_modules (id, title, description, version, content, checksum, uploaded_by, source_bank_id, source_bank_version, source_session_id, status, is_published, created_at, updated_at) VALUES (${moduleId}, ${title || file.name}, ${desc}, 1, ${content}, ${checksum}, ${s.sub}, ${sourceBankId}, ${sourceBankVersion}, ${sourceSessionId}, ${initialStatus}, false, now(), now()) RETURNING id, title, description, version, checksum, status, is_published, source_bank_id, source_bank_version, source_session_id, created_at`,
+          sql`INSERT INTO html_module_versions (id, module_id, version, content, checksum, uploaded_by, created_at) VALUES (${versionId}, ${moduleId}, 1, ${content}, ${checksum}, ${s.sub}, now())`,
+          sql`INSERT INTO audit_logs (id, actor_id, actor_email, action, entity_type, entity_id, metadata, created_at)
+            VALUES (gen_random_uuid(), ${s.sub}, ${s.email}, 'HTML_MODULE_UPLOADED', 'html_module', ${moduleId},
+              ${JSON.stringify({ title: title || file.name, source_bank_id: sourceBankId, source_bank_version: sourceBankVersion, source_session_id: sourceSessionId, status: initialStatus })}, now())`
+        ]);
+        const mod = txResults[0]?.[0];
+        if (!mod) throw new Error('HTML_MODULE_CREATE_TRANSACTION_RETURNED_NO_ROW');
         return json({ html_module: mod }, 201);
       });
     }
@@ -585,9 +592,14 @@ async function dispatch(req: Request): Promise<Response> {
           const validation = await validateCanonicalHtmlModule(mod);
           if (!validation.ok) return err(validation.message || 'Materi belum lolos validasi sumber kanonis.', 409, validation.code || 'CANONICAL_VALIDATION_FAILED');
         }
-        const rows = await sql`UPDATE html_modules SET title = COALESCE(${title}, title), description = CASE WHEN ${b?.description !== undefined} THEN ${description} ELSE description END, status = COALESCE(${status}, status), updated_at = now() WHERE id = ${id} RETURNING id, title, description, version, status, is_published, updated_at`;
-        await writeAudit(s, status ? 'HTML_STATUS_UPDATED' : 'HTML_MODULE_UPDATED', 'html_module', id, { status });
-        return json({ html_module: rows[0] });
+        const action = status ? 'HTML_STATUS_UPDATED' : 'HTML_MODULE_UPDATED';
+        const txResults = await sqlTransaction([
+          sql`UPDATE html_modules SET title = COALESCE(${title}, title), description = CASE WHEN ${b?.description !== undefined} THEN ${description} ELSE description END, status = COALESCE(${status}, status), updated_at = now() WHERE id = ${id} RETURNING id, title, description, version, status, is_published, updated_at`,
+          sql`INSERT INTO audit_logs (id, actor_id, actor_email, action, entity_type, entity_id, metadata, created_at)
+            SELECT gen_random_uuid(), ${s.sub}, ${s.email}, ${action}, 'html_module', ${id}, ${JSON.stringify({ status })}, now()
+            WHERE EXISTS (SELECT 1 FROM html_modules WHERE id = ${id})`
+        ]);
+        return json({ html_module: txResults[0]?.[0] });
       });
     }
     if (method === 'POST') {
@@ -600,9 +612,14 @@ async function dispatch(req: Request): Promise<Response> {
           const current = await sql`SELECT status FROM html_modules WHERE id = ${id}`;
           const ip = b?.is_published === true;
           if (ip && current[0]?.status !== 'APPROVED' && (await sql`SELECT source_session_id FROM html_modules WHERE id = ${id}`)[0]?.source_session_id) return err('Konten sesi kanonis harus disetujui admin sebelum dipublikasikan', 409, 'REVIEW_REQUIRED');
-          const rows = await sql`UPDATE html_modules SET is_published = ${ip}, updated_at = now() WHERE id = ${id} RETURNING id, is_published, status`;
-          await writeAudit(s, ip ? 'HTML_MODULE_PUBLISHED' : 'HTML_MODULE_UNPUBLISHED', 'html_module', id, {});
-          return json({ html_module: rows[0] });
+          const action = ip ? 'HTML_MODULE_PUBLISHED' : 'HTML_MODULE_UNPUBLISHED';
+          const txResults = await sqlTransaction([
+            sql`UPDATE html_modules SET is_published = ${ip}, updated_at = now() WHERE id = ${id} RETURNING id, is_published, status`,
+            sql`INSERT INTO audit_logs (id, actor_id, actor_email, action, entity_type, entity_id, metadata, created_at)
+              SELECT gen_random_uuid(), ${s.sub}, ${s.email}, ${action}, 'html_module', ${id}, '{}'::jsonb, now()
+              WHERE EXISTS (SELECT 1 FROM html_modules WHERE id = ${id})`
+          ]);
+          return json({ html_module: txResults[0]?.[0] });
         }
         return err('Not found', 404);
       });
@@ -645,9 +662,15 @@ async function dispatch(req: Request): Promise<Response> {
           if (!expected || Number(keyed[0]?.count || 0) !== expected) return err('Bank soal atau answer key untuk sesi HTML ini belum lengkap di Neon. Import dan verifikasi bank/kunci terlebih dahulu.', 409, 'QUESTION_KEY_COVERAGE_INCOMPLETE');
         }
         const vr = (await sql`SELECT id, version, content, checksum FROM html_module_versions WHERE module_id = ${hid} ORDER BY version DESC LIMIT 1`)[0];
-        const rows = await sql`INSERT INTO class_assignments (id, class_id, html_module_id, html_module_version_id, title, start_at, due_at, is_active, created_by, created_at) VALUES (gen_random_uuid(), ${cid}, ${hid}, ${vr ? vr.id : null}, ${title}, ${sa || null}, ${da || null}, true, ${s.sub}, now()) RETURNING id, class_id, html_module_id, html_module_version_id, title, start_at, due_at, is_active, created_at`;
-        await writeAudit(s, 'ASSIGNMENT_CREATED', 'assignment', rows[0].id, { class_id: cid, html_module_id: hid, title });
-        return json({ assignment: rows[0] }, 201);
+        const assignmentId = crypto.randomUUID();
+        const txResults = await sqlTransaction([
+          sql`INSERT INTO class_assignments (id, class_id, html_module_id, html_module_version_id, title, start_at, due_at, is_active, created_by, created_at) VALUES (${assignmentId}, ${cid}, ${hid}, ${vr ? vr.id : null}, ${title}, ${sa || null}, ${da || null}, true, ${s.sub}, now()) RETURNING id, class_id, html_module_id, html_module_version_id, title, start_at, due_at, is_active, created_at`,
+          sql`INSERT INTO audit_logs (id, actor_id, actor_email, action, entity_type, entity_id, metadata, created_at)
+            VALUES (gen_random_uuid(), ${s.sub}, ${s.email}, 'ASSIGNMENT_CREATED', 'assignment', ${assignmentId},
+              ${JSON.stringify({ class_id: cid, html_module_id: hid, title })}, now())`
+        ]);
+        if (!txResults[0]?.[0]) throw new Error('ASSIGNMENT_CREATE_TRANSACTION_RETURNED_NO_ROW');
+        return json({ assignment: txResults[0][0] }, 201);
       });
     }
     return err('Method not allowed', 405);
