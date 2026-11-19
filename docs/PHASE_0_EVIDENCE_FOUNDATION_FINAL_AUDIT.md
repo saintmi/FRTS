@@ -546,3 +546,16 @@ To continue runtime validation without production access, migration SQL files 00
 A read-back query confirmed all five dedicated ledger probe rows were present. A separate injected duplicate-primary-key transaction had already demonstrated full rollback, including rollback of a table created earlier in the same transaction.
 
 **Scope:** This is database-level runtime evidence for the SQL statements against a disposable clone, not proof that the `scripts/migrate.js` Node process, installed `@neondatabase/serverless` version, `sql.query()` array overload, and its exact transaction result ordering were executed end-to-end. Repository unit tests cover the migration builder and error propagation; the real Node migration CLI still requires a runtime integration harness with the actual serverless driver and a disposable connection string. No migration was run against the test branch parent or production.
+
+
+## 20. Disposable Neon concurrent submit and audit rollback evidence (19 November 2026)
+
+On disposable child branch `br-billowing-moon-ao18x47o`, two independent transaction calls were started concurrently against one isolated attempt fixture. Both transactions first locked the attempt row; the first held the lock briefly, claimed `in_progress → submitting`, finalized `submitted`, and wrote a receipt and `ATTEMPT_SUBMITTED` audit row. The competing transaction then acquired the lock but its conditional claim returned no row, so it did not finalize or create a second receipt/audit event. Read-back: status `submitted`, exactly 1 receipt, exactly 1 submit audit event. This is direct DB concurrency evidence for the row-lock/conditional-claim pattern.
+
+A separate isolated attempt fixture injected an audit failure by inserting an `audit_logs.actor_id` that violates the users FK after the attempt update and receipt insert had been staged in the same transaction. The transaction failed with SQLSTATE `23503`; read-back confirmed attempt status remained `in_progress`, receipt count `0`, audit count `0`. This proves rollback of the business mutation and receipt when the audit write fails inside the same transaction.
+
+**Scope boundary:** These tests validate the database transaction pattern, not two authenticated HTTP requests through the deployed Vercel/API handler. API-level auth, score calculation, question validation, duplicate response semantics, and network retry behavior still require an HTTP integration test using a disposable `DATABASE_URL`. No production branch was used.
+
+## 21. Critical mutation/audit transaction refactor
+
+The following API mutation paths now execute business writes and audit inserts in one `sqlTransaction` batch: user create/update, class create/update, invite create/deactivate, HTML module upload (including version row), HTML module metadata/status update, publish/unpublish, and assignment create. The generic `writeAudit` helper no longer suppresses audit failures. Submission already writes finalization, receipt, and audit in one transaction. CI run `44532378300` passed on commit `86789a0fee293fe20ec7a098e8684a3e82966aee` after the refactor. The three remaining `writeAudit` calls are for LLM request telemetry and are not core business mutations; their policy still needs explicit review.
