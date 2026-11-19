@@ -20,8 +20,6 @@ CREATE UNIQUE INDEX IF NOT EXISTS uq_questions_source_identity
   ON questions(bank_id, source_question_id)
   WHERE source_question_id IS NOT NULL;
 
-CREATE UNIQUE INDEX IF NOT EXISTS uq_question_options_position
-  ON question_options(question_id, sort_order);
 
 INSERT INTO schema_migrations(version, applied_at)
 VALUES ('006_question_bank_import_identity_constraints', now())
