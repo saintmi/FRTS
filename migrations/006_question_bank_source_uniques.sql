@@ -26,3 +26,8 @@ CREATE UNIQUE INDEX IF NOT EXISTS uq_question_options_question_sort
 INSERT INTO schema_migrations(version, applied_at)
 VALUES ('006_question_bank_source_uniques', now())
 ON CONFLICT (version) DO NOTHING;
+
+-- A single attempt has one terminal submission, therefore it can have only
+-- one receipt regardless of how many concurrent clients retry with new keys.
+CREATE UNIQUE INDEX IF NOT EXISTS uq_submission_receipts_attempt
+  ON submission_receipts(attempt_id);
