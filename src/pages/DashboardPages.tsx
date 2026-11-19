@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import { getJSON, postJSON, postForm, putJSON } from '../lib/apiClient';
+import { useAuth } from '../contexts/AuthContext';
 
 type Row = Record<string, any>;
 
@@ -488,5 +489,93 @@ export function AssessmentViewerPage() {
     {result ? <div className="notice-card">Latihan ini sudah pernah dikirim. Hasil yang tersimpan ditampilkan di bawah dan tidak dapat dikirim ulang.</div> : <div className="card preview-wrap"><iframe ref={frameRef} className="viewer" src={'/api/html/' + assignment.html_module_id} title="Latihan FRTS" sandbox="allow-scripts allow-forms allow-downloads" /></div>}
     {status && <div className="alert success" aria-live="polite">{status}</div>}<ErrorNotice value={error} />
     {result && <div className="card"><h2 className="section-title">Hasil reading terverifikasi</h2><p><strong>{result.score}</strong> / {result.max_score}</p><p>Status: {result.status}</p><p className="muted small">Jawaban vocabulary disimpan sebagai laporan formatif dan tidak digabung ke skor reading.</p></div>}
+  </div>;
+}
+
+
+const AI_FEATURES = [
+  { id: 'tutor', label: 'AI Tutor', roles: ['STUDENT','TEACHER','ADMIN'] },
+  { id: 'reading_coach', label: 'Reading Coach', roles: ['STUDENT','TEACHER','ADMIN'] },
+  { id: 'vocabulary_coach', label: 'Vocabulary Coach', roles: ['STUDENT','TEACHER','ADMIN'] },
+  { id: 'explain_answer', label: 'Penjelasan Jawaban', roles: ['STUDENT','TEACHER','ADMIN'] },
+  { id: 'writing_feedback', label: 'Writing Feedback', roles: ['STUDENT','TEACHER','ADMIN'] },
+  { id: 'practice_generator', label: 'Practice Generator', roles: ['TEACHER','ADMIN'] },
+  { id: 'teacher_copilot', label: 'Teacher Copilot', roles: ['TEACHER','ADMIN'] },
+  { id: 'question_generator', label: 'Question Generator', roles: ['TEACHER','ADMIN'] },
+  { id: 'html_generator', label: 'HTML Lesson Generator', roles: ['TEACHER','ADMIN'] },
+  { id: 'differentiation', label: 'Differentiated Learning', roles: ['TEACHER','ADMIN'] },
+  { id: 'class_insights', label: 'Class Insights', roles: ['TEACHER','ADMIN'] },
+  { id: 'content_reviewer', label: 'Content Reviewer', roles: ['TEACHER','ADMIN'] },
+  { id: 'platform_insights', label: 'Platform Insights', roles: ['ADMIN'] }
+];
+
+type AIMessage = { role: 'user' | 'assistant'; content: string };
+
+export function LlmAssistantPage() {
+  const { user } = useAuth();
+  const role = user?.role || 'STUDENT';
+  const features = AI_FEATURES.filter(item => item.roles.includes(role));
+  const [feature, setFeature] = useState(features[0]?.id || 'tutor');
+  const [messages, setMessages] = useState<AIMessage[]>([]);
+  const [draft, setDraft] = useState('');
+  const [context, setContext] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+  const [model, setModel] = useState('');
+  const transcriptRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => { transcriptRef.current?.scrollTo({ top: transcriptRef.current.scrollHeight, behavior: 'smooth' }); }, [messages, busy]);
+
+  async function sendMessage(e: FormEvent) {
+    e.preventDefault();
+    const content = draft.trim();
+    if (!content || busy) return;
+    const next: AIMessage[] = [...messages, { role: 'user', content }];
+    setMessages(next);
+    setDraft('');
+    setError('');
+    setBusy(true);
+    try {
+      const result = await postJSON('/api/llm/chat', { feature, messages: next.slice(-20), context });
+      setMessages([...next, { role: 'assistant', content: result.answer }]);
+      setModel(result.model || '');
+    } catch (err: any) {
+      setMessages(next);
+      setDraft(content);
+      setError(err.message || 'AI belum dapat menjawab.');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  function changeFeature(value: string) {
+    setFeature(value);
+    setMessages([]);
+    setError('');
+  }
+
+  return <div className="page dashboard-page">
+    <div className="page-heading"><div><h1 className="h1">FRTS AI Workspace</h1><p className="muted">Asisten pembelajaran dan pengajaran sesuai hak akses akun.</p></div><span className="badge">Provider-agnostic</span></div>
+    <div className="card">
+      <div className="form-grid">
+        <div className="field"><label htmlFor="ai-feature">Pilih asisten</label><select id="ai-feature" value={feature} onChange={e => changeFeature(e.target.value)}>{features.map(item => <option key={item.id} value={item.id}>{item.label}</option>)}</select></div>
+        <div className="field"><label htmlFor="ai-context">Konteks pembelajaran (opsional)</label><textarea id="ai-context" rows={2} value={context} onChange={e => setContext(e.target.value)} placeholder="Tempelkan teks bacaan, tujuan belajar, instruksi, atau data agregat yang relevan." /></div>
+      </div>
+      <p className="muted small">Jangan masukkan kata sandi, data pribadi sensitif, atau informasi siswa yang tidak diperlukan. Hasil AI adalah saran; kunci dan materi baru tetap perlu pemeriksaan guru.</p>
+    </div>
+    <section className="card ai-chat-card" aria-label="Percakapan AI">
+      <div className="ai-transcript" ref={transcriptRef} aria-live="polite">
+        {messages.length === 0 && <div className="ai-empty"><strong>Mulai percakapan</strong><p className="muted">Tanyakan sesuatu atau minta bantuan sesuai asisten yang dipilih.</p></div>}
+        {messages.map((message, index) => <article className={'ai-message ' + message.role} key={index}><strong>{message.role === 'user' ? 'Anda' : 'FRTS AI'}</strong><p>{message.content}</p></article>)}
+        {busy && <div className="ai-message assistant"><strong>FRTS AI</strong><p>Menyiapkan jawaban…</p></div>}
+      </div>
+      <ErrorNotice value={error} />
+      <form onSubmit={sendMessage} className="ai-compose">
+        <label className="sr-only" htmlFor="ai-prompt">Pesan untuk AI</label>
+        <textarea id="ai-prompt" rows={3} value={draft} onChange={e => setDraft(e.target.value)} placeholder="Tulis pertanyaan atau instruksi…" maxLength={8000} required />
+        <button type="submit" disabled={busy || !draft.trim()}>{busy ? 'Memproses…' : 'Kirim'}</button>
+      </form>
+      {model && <p className="muted small">Model aktif: {model}</p>}
+    </section>
   </div>;
 }
