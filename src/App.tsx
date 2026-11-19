@@ -33,7 +33,7 @@ function htmlPreviewUrl(id: string) { return '/api/html/' + id; }
 function htmlClassRow(c: any) {
   return (
     <tr key={c.id}>
-      <td>{c.name}</td>
+      <td><Link to={"/teacher/classes/" + c.id}>{c.name}</Link></td>
       <td>{c.description || '-'}</td>
       <td>{c.teacher_email || '-'}</td>
       <td>{c.student_count}</td>
@@ -228,11 +228,42 @@ function ClassDetail() {
   const [newCode, setNewCode] = useState('');
   const [newMaxUses, setNewMaxUses] = useState('');
   const [newExpiry, setNewExpiry] = useState('');
+  const [assignments, setAssignments] = useState<any[]>([]);
+  const [htmlModules, setHtmlModules] = useState<any[]>([]);
+  const [assignmentTitle, setAssignmentTitle] = useState('');
+  const [selectedHtml, setSelectedHtml] = useState('');
+  const [startAt, setStartAt] = useState('');
+  const [dueAt, setDueAt] = useState('');
   useEffect(() => {
     if (!id) return;
     setBusy(true);
     getJSON(`/api/classes/${id}`).then((a: any) => { setCls(a.class); setInvite(a.invite || null); setMembers(a.members || []); }).catch((e: any) => setErr(e.message || 'Detail kelas gagal dimuat.')).finally(() => setBusy(false));
   }, [id]);
+  useEffect(() => {
+    if (!id || !user || (user.role !== 'TEACHER' && user.role !== 'ADMIN')) return;
+    Promise.all([getJSON('/api/assignments'), getJSON('/api/html')])
+      .then(([a, h]: any[]) => {
+        setAssignments((a.assignments || []).filter((item: any) => String(item.class_id) === String(id)));
+        setHtmlModules((h.html_modules || []).filter((item: any) => item.status === 'APPROVED' && item.is_published));
+      })
+      .catch((e: any) => setErr(e.message || 'Data penugasan gagal dimuat.'));
+  }, [id, user]);
+  async function createAssignment(e: React.FormEvent) {
+    e.preventDefault();
+    if (!selectedHtml) { setErr('Pilih materi HTML yang sudah disetujui dan diterbitkan.'); return; }
+    setErr(''); setBusy(true);
+    try {
+      await postJSON('/api/assignments', {
+        class_id: id, html_module_id: selectedHtml,
+        title: assignmentTitle.trim() || htmlModules.find((m: any) => String(m.id) === String(selectedHtml))?.title || 'Latihan',
+        start_at: startAt || undefined, due_at: dueAt || undefined
+      });
+      const data: any = await getJSON('/api/assignments');
+      setAssignments((data.assignments || []).filter((item: any) => String(item.class_id) === String(id)));
+      setAssignmentTitle(''); setSelectedHtml(''); setStartAt(''); setDueAt('');
+    } catch (e: any) { setErr(e.message || 'Gagal membuat penugasan.'); }
+    finally { setBusy(false); }
+  }
   async function deactivateInvite() {
     setErr(''); setBusy(true);
     try {
@@ -271,6 +302,29 @@ function ClassDetail() {
               </form>
             )}
             {err && <div className="alert error">{err}</div>}
+          </div>
+          <div className="card">
+            <h2 className="h1" style={{ fontSize: '1.1rem', marginBottom: '0.5rem' }}>Buat Penugasan</h2>
+            <p className="muted small">Hanya materi HTML berstatus disetujui dan sudah diterbitkan yang dapat diberikan kepada siswa.</p>
+            {htmlModules.length === 0 ? <p className="muted">Belum ada materi yang memenuhi syarat. Upload, ajukan review, dan terbitkan materi terlebih dahulu.</p> : (
+              <form onSubmit={createAssignment}>
+                <div className="field"><label>Materi HTML</label><select value={selectedHtml} onChange={e => setSelectedHtml(e.target.value)} required><option value="">Pilih materi</option>{htmlModules.map((m: any) => <option key={m.id} value={m.id}>{m.title} · v{m.version}</option>)}</select></div>
+                <div className="field"><label>Judul penugasan</label><input value={assignmentTitle} onChange={e => setAssignmentTitle(e.target.value)} placeholder="Gunakan judul materi jika dikosongkan" /></div>
+                <div className="row">
+                  <div className="field"><label>Mulai (opsional)</label><input type="datetime-local" value={startAt} onChange={e => setStartAt(e.target.value)} /></div>
+                  <div className="field"><label>Tenggat (opsional)</label><input type="datetime-local" value={dueAt} onChange={e => setDueAt(e.target.value)} /></div>
+                </div>
+                <button type="submit" disabled={busy || !selectedHtml}>{busy ? 'Menyimpan...' : 'Berikan ke kelas'}</button>
+              </form>
+            )}
+          </div>
+          <div className="card">
+            <h2 className="h1" style={{ fontSize: '1.1rem', marginBottom: '0.5rem' }}>Penugasan Kelas</h2>
+            {assignments.length === 0 ? <p className="muted">Belum ada penugasan untuk kelas ini.</p> : (
+              <table className="table"><thead><tr><th>Judul</th><th>Materi</th><th>Status</th><th>Mulai</th><th>Tenggat</th></tr></thead><tbody>
+                {assignments.map((a: any) => <tr key={a.id}><td>{a.title}</td><td>{a.html_title || a.module_title || a.version || 'Materi HTML'}</td><td>{a.is_active ? 'Aktif' : 'Nonaktif'}</td><td>{a.start_at || 'Segera'}</td><td>{a.due_at || '—'}</td></tr>)}
+              </tbody></table>
+            )}
           </div>
           <div className="card"><h2 className="h1" style={{ fontSize: '1.1rem', marginBottom: '0.5rem' }}>Daftar Siswa</h2>
             {members.length === 0 && <p className="muted">Belum ada siswa.</p>}
