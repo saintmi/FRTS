@@ -805,7 +805,8 @@ async function dispatch(req: Request): Promise<Response> {
           transactionQueries.push(sql`UPDATE attempts SET status = 'submitted', score = ${ts}, max_score = ${ms}, submitted_at = now() WHERE id = ${id} AND status = 'submitting' RETURNING id`);
           transactionQueries.push(sql`INSERT INTO submission_receipts (id, attempt_id, receipt_id, submitted_at)
             SELECT gen_random_uuid(), ${id}, ${rid}, now()
-            WHERE EXISTS (SELECT 1 FROM attempts WHERE id = ${id} AND status = 'submitted')`);
+            WHERE EXISTS (SELECT 1 FROM attempts WHERE id = ${id} AND status = 'submitted')
+            ON CONFLICT (attempt_id) DO NOTHING`);
           transactionQueries.push(sql`INSERT INTO audit_logs (id, actor_id, actor_email, action, entity_type, entity_id, metadata, created_at)
             SELECT gen_random_uuid(), ${s.sub}, ${s.email}, 'ATTEMPT_SUBMITTED', 'attempt', ${id}, ${JSON.stringify({ source_session_id: sourceSessionId, score: ts, max_score: ms })}, now()
             WHERE EXISTS (SELECT 1 FROM submission_receipts WHERE attempt_id = ${id} AND receipt_id = ${rid})`);
