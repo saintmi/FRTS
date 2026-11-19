@@ -505,3 +505,27 @@ The GitHub Actions run `44521441780` on branch `p0/evidence-backtest`, head `df0
 
 The run verifies the newly extracted question-bank source preflight helper and its unit tests at CI level. It does not prove a full ZIP import, package-wide transaction rollback, source-manifest authorization, or runtime compatibility against the Neon database. The importer remains blocked from production use until those tests pass.
 
+
+
+## 18. CI result — importer transaction hardening (19 November 2026)
+
+Latest branch run `44528087604` completed successfully for commit `9a07527ad816a4fe1a58b76030dc3fbda96c420d`: dependency installation, lint, TypeScript/Vite build, and Vitest all passed. The test suite covers question-bank source preflight, SQL statement splitting, migration transaction construction/failure propagation, required audit error propagation, package importer transaction callback, importer conflict abort path, and API smoke/unauthenticated route checks.
+
+A test-only fixture-count assertion was corrected after CI exposed that the importer performs 16 SQL operations for the current one-question fixture. The final assertion now checks that the importer actually issues multiple DB operations while remaining inside one transaction callback. This is unit-level evidence, not a real import against Neon.
+
+### Importer status and safety boundary
+
+The package importer has been switched to a single transaction callback for the complete package write. Within that transaction it resolves existing and newly inserted session/stimulus/question IDs, compares existing session metadata, stimulus content, question metadata, options, and answer keys with the source, and aborts on mismatches rather than silently retaining stale rows. This path remains **NOT APPROVED FOR PRODUCTION IMPORT** until a disposable Neon end-to-end run verifies schema compatibility, successful import, second-run idempotency, conflict rollback, and row counts. No package import has been run against either Neon branch in this iteration.
+
+### Migration runtime evidence boundary
+
+On disposable child branch `br-billowing-moon-ao18x47o`, a successful multi-statement transaction persisted a probe table and two rows. A separate transaction that created a table, inserted one row, then deliberately violated a primary key rolled back; catalog check confirmed that the table did not exist afterwards. This proves Neon/Postgres transactional rollback behavior for the connector transaction operation. It does not yet execute the repository's Node `@neondatabase/serverless` migration runner against a disposable schema, so runtime acceptance of `scripts/migrate.js` remains open.
+
+### Remaining blockers (not closed by this CI pass)
+
+- Real Neon runtime execution of the Node migration runner with failure injection and ledger assertion.
+- Real two-client concurrent submission/idempotency test; failure injection on the submission audit row.
+- Migrate all critical mutation+audit writes into the same transaction (the generic helper now throws rather than suppresses audit errors, but separate post-commit audit writes can still leave the business mutation committed if audit insertion fails).
+- Real disposable Neon importer success/idempotency/conflict rollback tests and package integrity verification. Source manifest/hash allowlist still needs explicit governance before importing a package.
+- Authenticated role-isolation and end-to-end student/teacher/admin workflow tests.
+- No production migration, package import, merge, or main-branch write has been performed.
