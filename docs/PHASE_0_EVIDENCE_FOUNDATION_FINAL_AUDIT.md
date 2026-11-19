@@ -529,3 +529,20 @@ On disposable child branch `br-billowing-moon-ao18x47o`, a successful multi-stat
 - Real disposable Neon importer success/idempotency/conflict rollback tests and package integrity verification. Source manifest/hash allowlist still needs explicit governance before importing a package.
 - Authenticated role-isolation and end-to-end student/teacher/admin workflow tests.
 - No production migration, package import, merge, or main-branch write has been performed.
+
+
+## 19. Disposable Neon migration SQL execution — all existing migrations (19 November 2026)
+
+To continue runtime validation without production access, migration SQL files 001–005 were fetched from the test branch, split into individual SQL statements using the repository's SQL statement-splitting approach, and run against the disposable child branch `p0-migration-runtime-test-20261119` (`br-billowing-moon-ao18x47o`). For each migration, all statements and a dedicated ledger probe insert were submitted in one Neon transaction. Result:
+
+| Migration | SQL statements | Transaction result entries | Result |
+|---|---:|---:|---|
+| 001_initial | 52 | 53 | PASS |
+| 002_question_bank_source | 3 | 4 | PASS |
+| 003_html_module_source_session | 2 | 3 | PASS |
+| 004_html_module_source_bank | 2 | 3 | PASS |
+| 005_html_module_source_bank_version | 2 | 3 | PASS |
+
+A read-back query confirmed all five dedicated ledger probe rows were present. A separate injected duplicate-primary-key transaction had already demonstrated full rollback, including rollback of a table created earlier in the same transaction.
+
+**Scope:** This is database-level runtime evidence for the SQL statements against a disposable clone, not proof that the `scripts/migrate.js` Node process, installed `@neondatabase/serverless` version, `sql.query()` array overload, and its exact transaction result ordering were executed end-to-end. Repository unit tests cover the migration builder and error propagation; the real Node migration CLI still requires a runtime integration harness with the actual serverless driver and a disposable connection string. No migration was run against the test branch parent or production.
