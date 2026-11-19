@@ -730,7 +730,7 @@ async function dispatch(req: Request): Promise<Response> {
           // Serialize competing submissions on the attempt row. Every write after
           // the lock is guarded by the in_progress -> submitting claim.
           transactionQueries.unshift(sql`SELECT id FROM attempts WHERE id = ${id} FOR UPDATE`);
-          transactionQueries.push(sql`UPDATE attempts SET status = 'submitting' WHERE id = ${id} AND status = 'in_progress' RETURNING id`);
+          transactionQueries.splice(1, 0, sql`UPDATE attempts SET status = 'submitting' WHERE id = ${id} AND status = 'in_progress' RETURNING id`);
           // Guard answer writes so a request that lost the claim cannot append data.
           // Rebuild answer inserts as INSERT .. SELECT guarded by the claim state.
           const answerCount = ar.length;
@@ -739,7 +739,7 @@ async function dispatch(req: Request): Promise<Response> {
             const q = sourceSessionId ? sourceQuestionMap.get(qid) : legacyQuestionMap.get(qid);
             const av = ans[i].answer;
             const row = ar[i];
-            transactionQueries[i + 1] = sql`INSERT INTO attempt_answers (id, attempt_id, question_id, answer, is_correct, points_earned, created_at)
+            transactionQueries[i + 2] = sql`INSERT INTO attempt_answers (id, attempt_id, question_id, answer, is_correct, points_earned, created_at)
               SELECT gen_random_uuid(), ${id}, ${q.id}, ${JSON.stringify(av)}, ${row.is_correct}, ${row.points_earned}, now()
               WHERE EXISTS (SELECT 1 FROM attempts WHERE id = ${id} AND status = 'submitting')`;
           }
