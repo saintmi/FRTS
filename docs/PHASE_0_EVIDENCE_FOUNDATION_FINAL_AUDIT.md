@@ -489,3 +489,19 @@ GitHub Actions PR run `44519279563` on head `56f2ff3d882016fed798e5d33c9c95617f3
 - Complete Batch 1 canonical source, answer-key, vocabulary, recycled provenance, item-quality, and app synchronization acceptance.
 
 **Disposition:** P0 remains `ACCEPTANCE_BLOCKED`. CI PASS and ten zero-row-failure integrity queries do not constitute 100% product acceptance. No production branch writes, imports, migrations, or merges were performed.
+
+
+## 16. Owner confirmation — Batch 1 academic materials
+
+On 19 November 2026, the owner confirmed that Batch 1 academic materials had been checked and manually validated, with no requested content changes. This is recorded as **owner manual validation**, not as an independent automated or external academic audit. No Batch 1 questions, answer keys, vocabulary items, HTML learning materials, or academic source files were changed in response to this confirmation.
+
+This confirmation closes the need to repeat the same academic-content review in the current remediation loop unless new evidence or a specific defect is raised. It does **not** close the separate technical acceptance gates: importer atomicity and conflict detection, runtime scoring/submission behavior, durable audit writes, authenticated role isolation, complete learner/teacher/admin lifecycle tests, and verified migration transaction behavior.
+
+The owner-approved academic state must be preserved during technical remediation. All remaining changes in this loop are limited to platform code, database transaction safety on isolated test infrastructure, and technical tests. The production Neon branch remains protected; no production import or migration is authorized by this confirmation.
+
+## 17. CI result — question-bank preflight extraction
+
+The GitHub Actions run `44521441780` on branch `p0/evidence-backtest`, head `df0e7bc5bef0dd71df24f8131648d69d178bedfc`, completed successfully. Dependency installation, lint, TypeScript/Vite build, and Vitest all passed.
+
+The run verifies the newly extracted question-bank source preflight helper and its unit tests at CI level. It does not prove a full ZIP import, package-wide transaction rollback, source-manifest authorization, or runtime compatibility against the Neon database. The importer remains blocked from production use until those tests pass.
+
