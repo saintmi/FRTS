@@ -2,8 +2,7 @@ export function buildPackageImportQueries(sql, norm, pkg) {
   const sourcePackage = pkg.file;
   const sourceBankId = norm.bank.source_bank_id;
   const bankVersion = norm.bank.package_version;
-  const bankLookup = `source_package = ${sourcePackage} AND source_bank_id = ${sourceBankId} AND package_version = ${bankVersion}`;
-  const bankSelect = sql`SELECT id FROM question_banks WHERE source_package = ${sourcePackage}
+  const bankLookupSql = sql`SELECT id FROM question_banks WHERE source_package = ${sourcePackage}
     AND source_bank_id = ${sourceBankId} AND package_version = ${bankVersion}`;
   const queries = [];
 
@@ -28,7 +27,7 @@ export function buildPackageImportQueries(sql, norm, pkg) {
   for (const session of norm.sessions) {
     queries.push(sql`SELECT 1 / CASE WHEN EXISTS (
       SELECT 1 FROM learning_sessions
-      WHERE bank_id = (${bankSelect})
+      WHERE bank_id = (SELECT id FROM question_banks WHERE source_package = ${sourcePackage} AND source_bank_id = ${sourceBankId} AND package_version = ${bankVersion})
         AND source_session_id = ${session.source_session_id}
         AND (week IS DISTINCT FROM ${session.week}
           OR session_no IS DISTINCT FROM ${session.session_no}
@@ -57,7 +56,7 @@ export function buildPackageImportQueries(sql, norm, pkg) {
       SELECT 1 FROM questions q
       JOIN learning_sessions ls ON ls.id = q.session_id
       LEFT JOIN stimuli st ON st.id = q.stimulus_id
-      WHERE q.bank_id = (${bankSelect})
+      WHERE q.bank_id = (SELECT id FROM question_banks WHERE source_package = ${sourcePackage} AND source_bank_id = ${sourceBankId} AND package_version = ${bankVersion})
         AND q.source_question_id = ${question.source_question_id}
         AND (ls.source_session_id IS DISTINCT FROM ${question.session_id}
           OR COALESCE(st.source_stimulus_id, '') IS DISTINCT FROM ${(question.stimulus_id || '')}
@@ -77,7 +76,7 @@ export function buildPackageImportQueries(sql, norm, pkg) {
       }));
     queries.push(sql`SELECT 1 / CASE WHEN EXISTS (
       SELECT 1 FROM questions q
-      WHERE q.bank_id = (${bankSelect})
+      WHERE q.bank_id = (SELECT id FROM question_banks WHERE source_package = ${sourcePackage} AND source_bank_id = ${sourceBankId} AND package_version = ${bankVersion})
         AND q.source_question_id = ${question.source_question_id}
         AND COALESCE((
           SELECT jsonb_agg(jsonb_build_object(
@@ -91,7 +90,7 @@ export function buildPackageImportQueries(sql, norm, pkg) {
     const key = norm.answerKeys.find(candidate => candidate.question_source_id === question.source_question_id);
     queries.push(sql`SELECT 1 / CASE WHEN EXISTS (
       SELECT 1 FROM questions q
-      WHERE q.bank_id = (${bankSelect})
+      WHERE q.bank_id = (SELECT id FROM question_banks WHERE source_package = ${sourcePackage} AND source_bank_id = ${sourceBankId} AND package_version = ${bankVersion})
         AND q.source_question_id = ${question.source_question_id}
         AND EXISTS (SELECT 1 FROM question_answer_keys ak WHERE ak.question_id = q.id)
         AND NOT EXISTS (
@@ -106,7 +105,7 @@ export function buildPackageImportQueries(sql, norm, pkg) {
   for (const session of norm.sessions) {
     queries.push(sql`INSERT INTO learning_sessions
       (id, bank_id, source_session_id, week, session_no, title, total_questions, created_at)
-      VALUES (gen_random_uuid(), (${bankSelect}), ${session.source_session_id},
+      VALUES (gen_random_uuid(), (SELECT id FROM question_banks WHERE source_package = ${sourcePackage} AND source_bank_id = ${sourceBankId} AND package_version = ${bankVersion}), ${session.source_session_id},
         ${session.week}, ${session.session_no}, ${session.title}, ${session.total_questions}, now())
       ON CONFLICT (bank_id, source_session_id)
         WHERE source_session_id IS NOT NULL DO NOTHING`);
@@ -116,7 +115,7 @@ export function buildPackageImportQueries(sql, norm, pkg) {
     queries.push(sql`INSERT INTO stimuli
       (id, session_id, source_stimulus_id, content, content_type, created_at)
       VALUES (gen_random_uuid(),
-        (SELECT id FROM learning_sessions WHERE bank_id = (${bankSelect})
+        (SELECT id FROM learning_sessions WHERE bank_id = (SELECT id FROM question_banks WHERE source_package = ${sourcePackage} AND source_bank_id = ${sourceBankId} AND package_version = ${bankVersion})
           AND source_session_id = ${stimulus.session_id}),
         ${stimulus.source_stimulus_id}, ${stimulus.content}, ${stimulus.content_type}, now())
       ON CONFLICT (session_id, source_stimulus_id)
@@ -126,13 +125,13 @@ export function buildPackageImportQueries(sql, norm, pkg) {
   for (const question of norm.questions) {
     queries.push(sql`INSERT INTO questions
       (id, bank_id, session_id, stimulus_id, source_question_id, type, prompt, points, status, created_at)
-      VALUES (gen_random_uuid(), (${bankSelect}),
-        (SELECT id FROM learning_sessions WHERE bank_id = (${bankSelect})
+      VALUES (gen_random_uuid(), (SELECT id FROM question_banks WHERE source_package = ${sourcePackage} AND source_bank_id = ${sourceBankId} AND package_version = ${bankVersion}),
+        (SELECT id FROM learning_sessions WHERE bank_id = (SELECT id FROM question_banks WHERE source_package = ${sourcePackage} AND source_bank_id = ${sourceBankId} AND package_version = ${bankVersion})
           AND source_session_id = ${question.session_id}),
         CASE WHEN ${question.stimulus_id} IS NULL THEN NULL ELSE (
           SELECT st.id FROM stimuli st
           JOIN learning_sessions ls ON ls.id = st.session_id
-          WHERE ls.bank_id = (${bankSelect})
+          WHERE ls.bank_id = (SELECT id FROM question_banks WHERE source_package = ${sourcePackage} AND source_bank_id = ${sourceBankId} AND package_version = ${bankVersion})
             AND ls.source_session_id = ${question.session_id}
             AND st.source_stimulus_id = ${question.stimulus_id}
         ) END,
@@ -145,7 +144,7 @@ export function buildPackageImportQueries(sql, norm, pkg) {
       queries.push(sql`INSERT INTO question_options
         (id, question_id, label, text, is_correct, sort_order, created_at)
         VALUES (gen_random_uuid(),
-          (SELECT id FROM questions WHERE bank_id = (${bankSelect})
+          (SELECT id FROM questions WHERE bank_id = (SELECT id FROM question_banks WHERE source_package = ${sourcePackage} AND source_bank_id = ${sourceBankId} AND package_version = ${bankVersion})
             AND source_question_id = ${question.source_question_id}),
           ${option.label}, ${option.text}, ${option.is_correct}, ${option.sort_order}, now())
         ON CONFLICT (question_id, sort_order) DO NOTHING`);
@@ -156,7 +155,7 @@ export function buildPackageImportQueries(sql, norm, pkg) {
       queries.push(sql`INSERT INTO question_answer_keys
         (id, question_id, answer, explanation, created_at)
         VALUES (gen_random_uuid(),
-          (SELECT id FROM questions WHERE bank_id = (${bankSelect})
+          (SELECT id FROM questions WHERE bank_id = (SELECT id FROM question_banks WHERE source_package = ${sourcePackage} AND source_bank_id = ${sourceBankId} AND package_version = ${bankVersion})
             AND source_question_id = ${question.source_question_id}),
           ${JSON.stringify(key.answer)}, ${key.explanation}, now())
         ON CONFLICT (question_id) DO NOTHING`);
