@@ -621,3 +621,25 @@ Reviewing the actual importer entry point found that `loadEnv()` unconditionally
 ### Decision
 
 **Phase 0 remains `ACCEPTANCE_BLOCKED`. PR #3 remains Draft and unmerged.** The latest CI PASS is necessary but not sufficient to certify all release gates. No production database migration, content import, or production write was executed. The current test child branch was the only Neon target used for database probes.
+
+
+## 27. Batch 1 ZIP recovered from the user's Library and validated (20 November 2026)
+
+The prior statement that the Batch 1 archive was unavailable to this work session was incorrect. The ZIPs were present in the user's ChatGPT Library; they were not committed under the repository's `content/imports` directory. The archive was located and materialized without requesting another upload.
+
+Exact package examined:
+- `FRTS_Batch_01_Bank_Soal_v0.6.1_CLAUDE_AUDIT_CANDIDATE.zip`
+- SHA-256: `372bd8764896bc53b41229986f2ddcd382365b830377e223e17f6b1eacc42845`
+- Contains the student bank JSON, separate teacher-key JSON, eight HTML sessions, validation/build scripts, and audit artifacts.
+- The package's validator `tools/validate_frts_bank_v0.6.1.py` was executed locally and exited 0:
+  `PASS: 8 sessions, 200 unique questions, 120 unique stimuli, 96 legacy + 104 proposed keys, evidence links, student/teacher separation, responsive/print/persistence HTML.`
+
+The related `FRTS_Batch_01_Vocabulary_First_v0.6.1_EXTERNAL_AUDIT_CANDIDATE.zip` was also located:
+- SHA-256: `d612e2926702ec5190a6cb60eaa408400013c679f85255286198fbe366fe455a`
+- Its manifest declares 8 sessions, 120 stimuli, 200 questions and 24 text-extra vocabulary candidates. It explicitly records online app integration as `NOT_IMPLEMENTED`, external semantic audit and teacher review of 24 text-extra words as `PENDING`, and the 200-item teacher answer key as `MISSING_SOURCE`.
+
+Owner context: the user previously stated that Batch 1 had been manually checked and validated and required no content changes. Accordingly, no content edits or repeat academic rewrite are authorized or planned. The automated package validator was rerun as an engineering/structural check only; it is not represented as a new academic review.
+
+**Importer compatibility remains a separate engineering gate:** the current repository importer expects a single `question_bank*.json` with embedded `teacher_only.correct_value` objects. The v0.6.1 archive instead separates student questions from teacher keys (`legacy_official_keys` and `new_proposed_keys`), and the 104 latter keys carry the source status `PROPOSED_NEW_KEY_TEACHER_APPROVAL_REQUIRED`. Do not silently treat those as official keys or feed the student-only JSON directly into the legacy importer. Implement/test an explicit adapter preserving the separate key status, or import the bank in review/formative mode without promoting proposed keys to official scoring.
+
+The archive is available for continued test work. Its absence from the repository's `content/imports` directory is no longer a reason to block source retrieval; it remains a repository packaging/configuration issue only if the CLI is required to read the ZIP from that exact path.
