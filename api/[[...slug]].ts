@@ -224,18 +224,25 @@ async function dispatch(req: Request): Promise<Response> {
         const existing = await sql`SELECT id FROM users WHERE lower(email) = ${email}`;
         if (existing[0]) return err('Email sudah digunakan', 409, 'EMAIL_EXISTS');
         const passwordHash = await hashPw(password);
-        const rows = await sql`
-          INSERT INTO users (id, email, password_hash, role, is_active, email_verified, created_at, updated_at)
-          VALUES (gen_random_uuid(), ${email}, ${passwordHash}, ${role}, true, false, now(), now())
-          RETURNING id, email, role, is_active, email_verified, created_at
-        `;
-        const user = rows[0];
-        await sql`
-          INSERT INTO user_profiles (id, user_id, full_name, created_at, updated_at)
-          VALUES (gen_random_uuid(), ${user.id}, ${fullName || null}, now(), now())
-          ON CONFLICT (user_id) DO UPDATE SET full_name = EXCLUDED.full_name, updated_at = now()
-        `;
-        await writeAudit(s, 'USER_CREATED', 'user', user.id, { role, email });
+        const userId = crypto.randomUUID();
+        const txResults = await sqlTransaction([
+          sql`
+            INSERT INTO users (id, email, password_hash, role, is_active, email_verified, created_at, updated_at)
+            VALUES (${userId}, ${email}, ${passwordHash}, ${role}, true, false, now(), now())
+            RETURNING id, email, role, is_active, email_verified, created_at
+          `,
+          sql`
+            INSERT INTO user_profiles (id, user_id, full_name, created_at, updated_at)
+            VALUES (gen_random_uuid(), ${userId}, ${fullName || null}, now(), now())
+            ON CONFLICT (user_id) DO UPDATE SET full_name = EXCLUDED.full_name, updated_at = now()
+          `,
+          sql`
+            INSERT INTO audit_logs (id, actor_id, actor_email, action, entity_type, entity_id, metadata, created_at)
+            VALUES (gen_random_uuid(), ${s.sub}, ${s.email}, 'USER_CREATED', 'user', ${userId}, ${JSON.stringify({ role, email })}, now())
+          `
+        ]);
+        const user = txResults[0]?.[0];
+        if (!user) throw new Error('USER_CREATE_TRANSACTION_RETURNED_NO_ROW');
         return json({ user: { ...user, full_name: fullName || null } }, 201);
       }, ['ADMIN']);
     }
@@ -256,22 +263,29 @@ async function dispatch(req: Request): Promise<Response> {
         const duplicate = await sql`SELECT id FROM users WHERE lower(email) = ${email} AND id <> ${id}`;
         if (duplicate[0]) return err('Email sudah digunakan', 409, 'EMAIL_EXISTS');
       }
-      const rows = await sql`
-        UPDATE users SET email = COALESCE(${email}, email), role = COALESCE(${role}, role),
-        is_active = COALESCE(${active}, is_active), updated_at = now()
-        WHERE id = ${id}
-        RETURNING id, email, role, is_active, email_verified, updated_at
-      `;
-      if (!rows[0]) return err('User tidak ditemukan', 404);
-      if (fullName !== undefined) {
-        await sql`
-          INSERT INTO user_profiles (id, user_id, full_name, created_at, updated_at)
-          VALUES (gen_random_uuid(), ${id}, ${fullName || null}, now(), now())
-          ON CONFLICT (user_id) DO UPDATE SET full_name = EXCLUDED.full_name, updated_at = now()
-        `;
-      }
-      await writeAudit(s, 'USER_UPDATED', 'user', id, { role, email, is_active: active, full_name_changed: fullName !== undefined });
-      return json({ user: rows[0] });
+      const transactionQueries = [
+        sql`
+          UPDATE users SET email = COALESCE(${email}, email), role = COALESCE(${role}, role),
+          is_active = COALESCE(${active}, is_active), updated_at = now()
+          WHERE id = ${id}
+          RETURNING id, email, role, is_active, email_verified, updated_at
+        `
+      ];
+      if (fullName !== undefined) transactionQueries.push(sql`
+        INSERT INTO user_profiles (id, user_id, full_name, created_at, updated_at)
+        VALUES (gen_random_uuid(), ${id}, ${fullName || null}, now(), now())
+        ON CONFLICT (user_id) DO UPDATE SET full_name = EXCLUDED.full_name, updated_at = now()
+      `);
+      transactionQueries.push(sql`
+        INSERT INTO audit_logs (id, actor_id, actor_email, action, entity_type, entity_id, metadata, created_at)
+        SELECT gen_random_uuid(), ${s.sub}, ${s.email}, 'USER_UPDATED', 'user', ${id},
+          ${JSON.stringify({ role, email, is_active: active, full_name_changed: fullName !== undefined })}, now()
+        WHERE EXISTS (SELECT 1 FROM users WHERE id = ${id})
+      `);
+      const txResults = await sqlTransaction(transactionQueries);
+      const user = txResults[0]?.[0];
+      if (!user) return err('User tidak ditemukan', 404);
+      return json({ user });
     }, ['ADMIN']);
   }
 
