@@ -125,18 +125,22 @@ async function main() {
     const sqlText = fs.readFileSync(filePath, 'utf8');
     const statements = splitStatements(sqlText).filter(s => s.length > 0);
     console.log(`APPLY ${file} (${statements.length} statements) ...`);
-    for (const stmt of statements) {
-      try {
-        // strip leading/trailing, execute via tagged template
-        await sql.query(stmt);
-      } catch (e) {
-        console.error(`  ERROR in ${file}:`, e.message);
-        console.error(`  STATEMENT: ${stmt.slice(0, 200)}`);
-        process.exit(1);
-      }
+    // Execute every statement and the ledger write in one Neon transaction.
+    // A failed statement must roll back the entire migration rather than leave
+    // partially-applied DDL with no schema_migrations record.
+    const transactionQueries = statements.map((stmt) => sql.query(stmt));
+    transactionQueries.push(
+      sql`INSERT INTO schema_migrations (version) VALUES (${version}) ON CONFLICT (version) DO NOTHING`
+    );
+    try {
+      await sql.transaction(transactionQueries);
+    } catch (e) {
+      console.error(`  ERROR in atomic migration ${file}:`, e.message);
+      console.error(`  MIGRATION ROLLED BACK; ledger was not advanced.`);
+      process.exit(1);
     }
-    await sql`INSERT INTO schema_migrations (version) VALUES (${version}) ON CONFLICT (version) DO NOTHING`;
-    console.log(`OK ${file}`);
+    appliedSet.add(version);
+    console.log(`OK ${file} (atomic)`);
   }
 
   const final = await sql`SELECT version FROM schema_migrations ORDER BY version`;
