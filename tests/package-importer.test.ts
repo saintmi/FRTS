@@ -1,20 +1,8 @@
 import { describe, expect, it, vi } from 'vitest';
-import { importPackageAtomically } from '../scripts/lib/package-importer.js';
-
-function makeSqlStub(responses = []) {
-  const calls = [];
-  const tx = vi.fn(async (callback) => {
-    const tagged = (strings, ...values) => {
-      calls.push({ sql: strings.join('?'), values });
-      return responses.shift() || [];
-    };
-    return callback(tagged);
-  });
-  return { sql: Object.assign(() => [], { transaction: tx }), calls, tx };
-}
+import { buildPackageImportQueries, importPackageAtomically } from '../scripts/lib/package-importer.js';
 
 const norm = {
-  bank: { source_bank_id: 'B1', package_version: '1' },
+  bank: { source_bank_id: 'BANK-1', package_version: '1.0', name: 'Demo Bank', status: 'IMPORTED' },
   sessions: [{ source_session_id: 'S1', week: 1, session_no: 1, title: 'Session 1', total_questions: 1 }],
   stimuli: [{ source_stimulus_id: 'ST1', session_id: 'S1', content: 'Passage', content_type: 'text' }],
   questions: [{ source_question_id: 'Q1', session_id: 'S1', stimulus_id: 'ST1', type: 'multiple_choice', prompt: 'Choose', points: 1, status: 'DRAFT' }],
@@ -28,32 +16,41 @@ const norm = {
   totalQuestions: 1,
 };
 
+function makeSqlStub() {
+  const tag = vi.fn((strings, ...values) => ({ strings: [...strings], values }));
+  tag.transaction = vi.fn().mockResolvedValue([]);
+  return tag;
+}
+
 describe('atomic package importer', () => {
-  it('runs all package writes through one transaction callback', async () => {
-    const stub = makeSqlStub([
-      [{ id: 'bank-1' }], // lock bank
-      [], // find session
-      [], // find stimulus
-      [], // find question
-      [], // options absent
-      [], // answer key absent
-      [], // update bank counts
-      [], // insert import ledger
-    ]);
-    const result = await importPackageAtomically(stub.sql, 'bank-1', norm, { file: 'b.zip', sha256: 'abc' });
-    expect(stub.tx).toHaveBeenCalledOnce();
-    expect(result).toMatchObject({ bank_id: 'bank-1', sessions: 1, questions: 1 });
-    expect(stub.calls.length).toBeGreaterThan(8);
+  it('submits an array of parameterized statements in one serializable transaction', async () => {
+    const sql = makeSqlStub();
+    const queries = buildPackageImportQueries(sql, norm, { file: 'demo.zip', sha256: 'abc123' });
+    expect(Array.isArray(queries)).toBe(true);
+    expect(queries.length).toBeGreaterThan(10);
+    expect(queries.every(query => Array.isArray(query.strings) && Array.isArray(query.values))).toBe(true);
+
+    await importPackageAtomically(sql, norm, { file: 'demo.zip', sha256: 'abc123' });
+    expect(sql.transaction).toHaveBeenCalledOnce();
+    const [sentQueries, options] = sql.transaction.mock.calls[0];
+    expect(Array.isArray(sentQueries)).toBe(true);
+    expect(sentQueries.length).toBe(queries.length);
+    expect(options).toEqual({ isolationLevel: 'Serializable' });
   });
 
-  it('aborts when an existing session conflicts with the canonical package', async () => {
-    const stub = makeSqlStub([
-      [{ id: 'bank-1' }],
-      [{ id: 'session-old', week: 1, session_no: 1, title: 'Different title', total_questions: 1 }],
-    ]);
-    await expect(importPackageAtomically(stub.sql, 'bank-1', norm, { file: 'b.zip', sha256: 'abc' }))
-      .rejects.toThrow(/existing session differs/);
-    expect(stub.tx).toHaveBeenCalledOnce();
-    expect(stub.calls).toHaveLength(2);
+  it('includes conflict preflight and uses natural-key subqueries for child rows', () => {
+    const sql = makeSqlStub();
+    const queries = buildPackageImportQueries(sql, norm, { file: 'demo.zip', sha256: 'abc123' });
+    const source = queries.map(query => query.strings.join('?')).join('\n');
+    expect(source).toContain('bank_preflight');
+    expect(source).toContain('session_preflight');
+    expect(source).toContain('stimulus_preflight');
+    expect(source).toContain('question_preflight');
+    expect(source).toContain('options_preflight');
+    expect(source).toContain('answer_key_preflight');
+    expect(source).toContain('ON CONFLICT');
+    expect(source).toContain('content_imports');
+    expect(source).toContain('source_sha256');
+    expect(source).not.toContain('[object Promise]');
   });
 });
