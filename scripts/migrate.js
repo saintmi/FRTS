@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { neon } from '@neondatabase/serverless';
 import { splitStatements } from './lib/sql-splitter.js';
+import { buildMigrationTransaction } from './lib/transaction-builders.js';
 
 function stripBom(s) { return s.replace(/^\uFEFF/, ''); }
 
@@ -45,10 +46,7 @@ async function main() {
     // Execute every statement and the ledger write in one Neon transaction.
     // A failed statement must roll back the entire migration rather than leave
     // partially-applied DDL with no schema_migrations record.
-    const transactionQueries = statements.map((stmt) => sql.query(stmt));
-    transactionQueries.push(
-      sql`INSERT INTO schema_migrations (version) VALUES (${version}) ON CONFLICT (version) DO NOTHING`
-    );
+    const transactionQueries = buildMigrationTransaction(sql, statements, version);
     try {
       await sql.transaction(transactionQueries);
     } catch (e) {
