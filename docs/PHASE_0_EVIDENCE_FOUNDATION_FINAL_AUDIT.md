@@ -396,3 +396,46 @@ These are data-state checks, not yet schema-enforced guarantees. The existing sc
 No INSERT, UPDATE, DELETE, DDL, migration, or content import was performed in this initial run. Production remains untouched. This initial PASS covers only the listed relational data checks on the cloned test snapshot; it does not close the submission concurrency, audit durability, authenticated role-isolation, importer transactionality, academic key approval, or complete Batch 1 acceptance blockers.
 
 The required integration rule is now explicit: do not merge code or migration changes into main until targeted tests, regression tests, and CI are PASS. Once merged, apply any approved database migration to production only through the separately verified release step, not as a side effect of merging code.
+
+
+## 13. Iterative backtest — 19 November 2026 (Neon test branch)
+
+**Environment:** Neon project `les-tka-regency`, branch `p0-evidence-backtest` (`br-divine-mode-ao6yapik`), database `neondb`, PostgreSQL 18.7. All SQL in this section was read-only. Production branch and GitHub `main` were not modified by these checks.
+
+### Migration runner reconciliation
+Inspected `scripts/migrate.js` and migrations 001–005. The runner sorts `.sql` files, derives a version by removing the extension, and skips a migration if either the filename (e.g. `001_initial.sql`) or derived version (e.g. `001_initial`) exists in `schema_migrations`. It then inserts the derived version after applying each file. Migrations 001 and 002 also insert their own derived version. The live ledger contains both filename and derived-version rows for 001 and 002; this is consistent with legacy filename-form entries plus the runner/SQL version-form entries, and is not evidence that the DDL ran twice. The runner's dual-form skip logic handles both. Do not delete ledger rows or rerun migrations to “clean up” this history.
+
+**Remaining migration-runner risk:** statements in a migration are executed one by one, outside an explicit transaction. If a later statement fails, earlier statements may already have committed while the migration is not recorded as applied. This is a genuine partial-migration recovery risk. It must be addressed and tested on an isolated database before any new production migration. Existing migrations 001–005 were not rerun.
+
+### Additional read-only database backtest
+
+| Check | Result | Assessment |
+|---|---:|---|
+| Attempt status inventory | 6 `in_progress`, 7 `submitted` | Observed, no assertion of correctness |
+| Attempts with missing assignment | 0 | PASS |
+| Attempts with missing student | 0 | PASS |
+| Submitted attempts without receipt | 0 | PASS |
+| Receipt attached to non-submitted attempt | 0 | PASS |
+| Attempt with multiple receipts | 0 | PASS |
+| Duplicate `(bank_id, source_question_id)` | 0 | PASS |
+| Answers whose question bank differs from assignment HTML bank/version (where source identity exists) | 0 | PASS |
+| Batch 1 v0.2 | 8 sessions / 96 questions / 16 stimuli / 96 keyed | Existing legacy data only |
+| Batch 2 v0.2 | 8 / 96 / 16 / 96 keyed | Existing data |
+| Batch 3 v0.3 | 8 / 132 / 22 / 132 keyed | Existing data |
+| Interactive v0.5 | 14 / 440 / 46 / 440 keyed | Existing data |
+
+These checks validate current rows only. They do not prove transaction safety, answer-key academic correctness, role isolation, or the unimported Batch 1 v0.6 candidate.
+
+### Confirmed code-level blockers from targeted inspection
+
+1. **Submission race remains BLOCKER.** In `api/[[...slug]].ts` around the attempt submission handler (approximately lines 683–735), the handler reads the attempt and checks `status === 'in_progress'` before building a transaction. The transaction later inserts answer rows, updates the attempt to `submitted`, and inserts a receipt, but the update is not conditional on the prior state and does not visibly lock the attempt row as part of the transaction. Concurrent requests with distinct receipt IDs can both pass the pre-check. A read-only data scan showing no duplicate receipts in existing data does not disprove this race.
+2. **Audit durability remains HIGH.** `writeAudit()` catches and suppresses every insert failure. Attempt submission calls it after the submission transaction, so a committed submission can lack its audit record. Critical audit writes should be in the same transaction as the business state change or the business operation must fail when the required audit cannot be persisted.
+3. **Importer atomicity remains BLOCKER before any import.** `scripts/import-questions.js` issues many independent SQL calls and has no package-wide transaction. It can leave partial data if a later insert fails. It also selects the last matching bank JSON instead of requiring exactly one, and silently leaves existing options/keys unchanged when the source differs. Do not run this importer against production or treat dry-run counts as full validation.
+4. **Migration atomicity remains HIGH before new migrations.** `scripts/migrate.js` executes statements individually and exits on first error; it does not wrap a migration plus ledger insert in one transaction. A migration can therefore be partially applied without a ledger entry.
+
+### Backtest disposition
+- **Current data preflight:** 8/8 earlier integrity checks plus the additional checks above returned zero detected row-level violations.
+- **P0 acceptance:** NOT PASS. The code-level blockers above are still open, authenticated role-scope/lifecycle tests have not been run, and the content evidence blockers in Sections 3 and 7 remain.
+- **No remediation is claimed in this iteration.** This iteration adds verified diagnostics and confirms where code changes are required. It does not justify a “100% final” declaration.
+- **Safety:** no SQL writes, DDL, migrations, imports, or production data changes were executed in this iteration.
+- **Next acceptance loop:** implement atomic submission with concurrency/idempotency tests; make critical audit durable; make migration/import execution atomic and source-manifest validated; add authenticated role-isolation and end-to-end lifecycle tests; rerun the complete regression suite and branch CI. Only after every acceptance gate passes should a PR be merged to `main`. Production DB rollout remains a separate controlled step.
