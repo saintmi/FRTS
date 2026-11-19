@@ -9,12 +9,18 @@ import { importPackageAtomically } from './lib/package-importer.js';
 
 function stripBom(s) { return s.replace(/^\uFEFF/, ''); }
 function loadEnv() {
-  const raw = fs.readFileSync(path.resolve(process.cwd(), '.env'), 'utf8');
-  const env = {};
-  for (const line of stripBom(raw).split('\n')) {
-    const m = line.match(/^([^=]+)=(.*)$/);
-    if (m) env[m[1].trim()] = m[2].trim();
+  // CI/deployment environments inject secrets directly; local development may
+  // still use .env. Explicit process environment values always take precedence.
+  const env = { ...process.env };
+  const envPath = path.resolve(process.cwd(), '.env');
+  if (fs.existsSync(envPath)) {
+    const raw = fs.readFileSync(envPath, 'utf8');
+    for (const line of stripBom(raw).split('\n')) {
+      const m = line.match(/^\s*([^#=\s]+)\s*=\s*(.*)\s*$/);
+      if (m && env[m[1]] === undefined) env[m[1]] = m[2].replace(/^(['"])(.*)\1$/, '$2');
+    }
   }
+  if (!env.DATABASE_URL) throw new Error('DATABASE_URL is required (set it in the environment or .env).');
   return env;
 }
 
