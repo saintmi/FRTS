@@ -3,6 +3,7 @@ import path from 'node:path';
 import os from 'node:os';
 import crypto from 'node:crypto';
 import { execSync } from 'node:child_process';
+import { normalizeVocabularyFirstBank } from './lib/vocabulary-first-adapter.js';
 import { neon } from '@neondatabase/serverless';
 import { selectCanonicalBankJson, validateBankSource } from './lib/question-bank-validation.js';
 import { importPackageAtomically } from './lib/package-importer.js';
@@ -43,7 +44,25 @@ const PACKAGES = [
 
 function extractZip(zipPath, destDir) {
   fs.mkdirSync(destDir, { recursive: true });
-  execSync(`powershell -NoProfile -Command "Expand-Archive -LiteralPath '${zipPath}' -DestinationPath '${destDir}' -Force"`, { stdio: 'pipe' });
+  if (process.platform === 'win32') {
+    execSync(`powershell -NoProfile -Command "Expand-Archive -LiteralPath '${zipPath}' -DestinationPath '${destDir}' -Force"`, { stdio: 'pipe' });
+  } else {
+    execSync('unzip', ['-q', zipPath, '-d', destDir], { stdio: 'pipe' });
+  }
+}
+
+function findUniqueFile(dir, basename) {
+  const matches = [];
+  function walk(d) {
+    for (const entry of fs.readdirSync(d, { withFileTypes: true })) {
+      const full = path.join(d, entry.name);
+      if (entry.isDirectory()) walk(full);
+      else if (entry.name === basename) matches.push(full);
+    }
+  }
+  walk(dir);
+  if (matches.length !== 1) throw new Error('Expected exactly one ' + basename + '; found ' + matches.length + '.');
+  return matches[0];
 }
 
 function findBankJson(dir) {
@@ -152,7 +171,7 @@ async function main() {
   const report = { packages: [], total_sessions: 0, total_questions: 0, imported_questions: 0, skipped: 0, errors: [] };
 
   const activePackages = packageArg
-    ? [{ file: packageArg, bankVersion: packageVersionArg || '0.4' }]
+    ? [{ file: packageArg, bankVersion: packageVersionArg || (packageArg.includes('v0.6.1') ? '0.6.1' : '0.4') }]
     : PACKAGES;
 
   for (const pkg of activePackages) {
@@ -165,16 +184,31 @@ async function main() {
     const tmpDir = path.resolve(os.tmpdir(), 'frts-import-' + crypto.randomBytes(4).toString('hex'));
     try {
       extractZip(zipPath, tmpDir);
-      const bankJson = findBankJson(tmpDir);
-      if (!bankJson) {
-        report.errors.push({ package: pkg.file, error: 'No question bank JSON found' });
-        report.packages.push({ package: pkg.file, status: 'NO_JSON' });
-        continue;
-      }
-      const bankRaw = JSON.parse(stripBom(fs.readFileSync(bankJson, 'utf8')));
-      const sourceCounts = validateBankSource(bankRaw, packageVersionArg || pkg.bankVersion);
       const archiveSha256 = crypto.createHash('sha256').update(fs.readFileSync(zipPath)).digest('hex');
-      const norm = normalizeBank(bankRaw, pkg.file, packageVersionArg || pkg.bankVersion);
+      let norm;
+      let sourceCounts;
+      const studentBankPath = findUniqueFile(tmpDir, 'FRTS_Batch_01_Student_Bank_v0.6.1.json');
+      const teacherKeysPath = findUniqueFile(tmpDir, 'FRTS_Batch_01_Teacher_Key_v0.6.1.json');
+      if (studentBankPath && teacherKeysPath) {
+        const studentBank = JSON.parse(stripBom(fs.readFileSync(studentBankPath, 'utf8')));
+        const teacherKeys = JSON.parse(stripBom(fs.readFileSync(teacherKeysPath, 'utf8')));
+        norm = normalizeVocabularyFirstBank(studentBank, teacherKeys, pkg.file, packageVersionArg || pkg.bankVersion);
+        sourceCounts = {
+          bank_id: norm.bank.source_bank_id,
+          bank_version: norm.bank.package_version,
+          sessions: norm.sessions.length,
+          questions: norm.questions.length,
+          stimuli: norm.stimuli.length,
+          official_source_keys: norm.keyDisposition.official_source_keys,
+          proposed_keys_excluded_from_official_scoring: norm.keyDisposition.proposed_keys_excluded_from_official_scoring,
+        };
+      } else {
+        const bankJson = findBankJson(tmpDir);
+        if (!bankJson) throw new Error('No supported question bank source files found');
+        const bankRaw = JSON.parse(stripBom(fs.readFileSync(bankJson, 'utf8')));
+        sourceCounts = validateBankSource(bankRaw, packageVersionArg || pkg.bankVersion);
+        norm = normalizeBank(bankRaw, pkg.file, packageVersionArg || pkg.bankVersion);
+      }
 
       if (DRY_RUN) {
         report.packages.push({ package: pkg.file, status: 'DRY_RUN', bank_id: norm.bank.source_bank_id, bank_version: norm.bank.package_version, sha256: archiveSha256, ...sourceCounts });
@@ -193,7 +227,7 @@ async function main() {
         norm.bank.source_bank_id,
         norm.bank.package_version
       );
-      const pkgMeta = { file: pkg.file, sha256: archiveSha256 };
+      const pkgMeta = { file: pkg.file, sha256: archiveSha256, keyDisposition: norm.keyDisposition || null };
       await importPackageAtomically(sql, norm, pkgMeta);
       const bankSessions = norm.sessions.length;
       const bankQuestions = norm.questions.length;
