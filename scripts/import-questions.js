@@ -174,9 +174,9 @@ async function main() {
       }
       const bankId = bankRow[0].id;
       const pkgMeta = { file: pkg.file, sha256: archiveSha256 };
-      const result = await importPackageAtomically(sql, bankId, norm, pkgMeta);
-      const bankSessions = result.sessions;
-      const bankQuestions = result.questions;
+      await importPackageAtomically(sql, norm, pkgMeta);
+      const bankSessions = norm.sessions.length;
+      const bankQuestions = norm.questions.length;
 
       report.packages.push({ package: pkg.file, status: 'IMPORTED', bank_id: norm.bank.source_bank_id, bank_version: norm.bank.package_version, sha256: archiveSha256, sessions: bankSessions, questions: bankQuestions });
       report.total_sessions += bankSessions;
