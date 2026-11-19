@@ -1,3 +1,5 @@
+> **Historical status snapshot — do not use as the current product specification or release certification.** This file contains point-in-time claims about local paths, schema counts, deployments, environment configuration, and test results that may have changed. Verify the current source, GitHub Actions, Vercel deployment, and Neon state before relying on any claim. Product direction and feature requirements are governed by [FRTS Product Master Specification](./FRTS_PRODUCT_MASTER_SPEC.md); documentation hierarchy is in [docs index](./README.md). Update this status file only with evidence from the current implementation.
+
 # IMPLEMENTATION STATUS — FRTS LEARNING PLATFORM
 
 ## 1. Repository yang Digunakan
