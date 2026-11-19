@@ -572,3 +572,10 @@ Review of the actual Neon schema exposed that the importer used `ON CONFLICT` ta
 - `(question_id, sort_order)` for question options
 
 Migration 006 was executed in one transaction on disposable child branch `br-billowing-moon-ao18x47o`; all five index creations and its ledger insert succeeded. No parent/test shared branch or production database was modified. CI for the migration commit is pending. This closes the SQL `ON CONFLICT` prerequisite gap for the package importer, subject to end-to-end importer execution against the exact package manifest and runtime.
+
+
+## 23. API role-isolation and mutation/audit acceptance tests (19 November 2026)
+
+Added `tests/api-role-isolation.test.ts` covering admin-only user directory gates for student/teacher roles, teacher class-list scoping, student class-membership scoping, atomic class-create + audit batching, and propagation of an injected audit transaction failure. The first test attempt exposed a mismatch in the Neon mock: it returned a plain Promise, while the production Neon tagged query object is also passed as a transaction query descriptor. The test double was corrected to be a thenable query descriptor carrying template strings/values; production code was not changed for this test-only issue.
+
+Latest CI run `44533954259` on commit `fe2e30985a75e96b070d460201e1b94f84901eb0` completed PASS: lint (0 errors; 93 existing warnings), TypeScript/Vite build, and all 39 tests across 6 files. This is CI evidence for role gates and audit transaction composition; the HTTP tests use a mocked Neon driver, so they do not replace deployed HTTP integration tests against a disposable Neon URL.
