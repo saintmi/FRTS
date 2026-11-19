@@ -310,9 +310,14 @@ async function dispatch(req: Request): Promise<Response> {
         const name: string = b?.name; const desc: string = b?.description;
         if (!name) return err('Name required', 400);
         const tid = s.role === 'ADMIN' ? (b?.teacher_id || s.sub) : s.sub;
-        const rows = await sql`INSERT INTO classes (id, name, description, teacher_id) VALUES (gen_random_uuid(), ${name}, ${desc || null}, ${tid}) RETURNING id, name, description, teacher_id, is_active, created_at`;
-        await writeAudit(s, 'CLASS_CREATED', 'class', rows[0].id, { name });
-        return json({ class: rows[0] }, 201);
+        const classId = crypto.randomUUID();
+        const txResults = await sqlTransaction([
+          sql`INSERT INTO classes (id, name, description, teacher_id) VALUES (${classId}, ${name}, ${desc || null}, ${tid}) RETURNING id, name, description, teacher_id, is_active, created_at`,
+          sql`INSERT INTO audit_logs (id, actor_id, actor_email, action, entity_type, entity_id, metadata, created_at)
+            VALUES (gen_random_uuid(), ${s.sub}, ${s.email}, 'CLASS_CREATED', 'class', ${classId}, ${JSON.stringify({ name })}, now())`
+        ]);
+        if (!txResults[0]?.[0]) throw new Error('CLASS_CREATE_TRANSACTION_RETURNED_NO_ROW');
+        return json({ class: txResults[0][0] }, 201);
       });
     }
     return err('Method not allowed', 405);
@@ -344,9 +349,14 @@ async function dispatch(req: Request): Promise<Response> {
         const isActive = b?.is_active !== undefined ? Boolean(b.is_active) : null;
         if (name === null && b?.description === undefined && isActive === null) return err('No fields', 400);
         if (name !== null && !name) return err('Nama kelas tidak boleh kosong', 400);
-        const rows = await sql`UPDATE classes SET name = COALESCE(${name}, name), description = CASE WHEN ${b?.description !== undefined} THEN ${description} ELSE description END, is_active = COALESCE(${isActive}, is_active), updated_at = now() WHERE id = ${id} RETURNING id, name, description, is_active, updated_at`;
-        await writeAudit(s, 'CLASS_UPDATED', 'class', id, { name_changed: name !== null, active_changed: isActive !== null });
-        return json({ class: rows[0] });
+        const txResults = await sqlTransaction([
+          sql`UPDATE classes SET name = COALESCE(${name}, name), description = CASE WHEN ${b?.description !== undefined} THEN ${description} ELSE description END, is_active = COALESCE(${isActive}, is_active), updated_at = now() WHERE id = ${id} RETURNING id, name, description, is_active, updated_at`,
+          sql`INSERT INTO audit_logs (id, actor_id, actor_email, action, entity_type, entity_id, metadata, created_at)
+            SELECT gen_random_uuid(), ${s.sub}, ${s.email}, 'CLASS_UPDATED', 'class', ${id},
+              ${JSON.stringify({ name_changed: name !== null, active_changed: isActive !== null })}, now()
+            WHERE EXISTS (SELECT 1 FROM classes WHERE id = ${id})`
+        ]);
+        return json({ class: txResults[0]?.[0] });
       });
     }
     if (method === 'POST') {
@@ -361,15 +371,22 @@ async function dispatch(req: Request): Promise<Response> {
           const ed = b?.expires_in_days ? Number(b.expires_in_days) : null;
           const code = b?.code || cryptoRandBytes(4).toString('hex').slice(0, 8).toUpperCase();
           const ea = ed ? new Date(Date.now() + ed * 86400000).toISOString() : null;
-          await sql`UPDATE class_invites SET is_active = false WHERE class_id = ${id} AND is_active = true`;
-          const rows = await sql`INSERT INTO class_invites (id, class_id, code, max_uses, used_count, expires_at, is_active, created_by, created_at) VALUES (gen_random_uuid(), ${id}, ${code}, ${mu || null}, 0, ${ea || null}, true, ${s.sub}, now()) RETURNING id, code, max_uses, used_count, expires_at, is_active, created_at`;
-          await writeAudit(s, 'CLASS_INVITE_CREATED', 'class', id, { max_uses: mu, expires_at: ea });
-          return json({ invite: rows[0] }, 201);
+          const inviteId = crypto.randomUUID();
+          const txResults = await sqlTransaction([
+            sql`UPDATE class_invites SET is_active = false WHERE class_id = ${id} AND is_active = true`,
+            sql`INSERT INTO class_invites (id, class_id, code, max_uses, used_count, expires_at, is_active, created_by, created_at) VALUES (${inviteId}, ${id}, ${code}, ${mu || null}, 0, ${ea || null}, true, ${s.sub}, now()) RETURNING id, code, max_uses, used_count, expires_at, is_active, created_at`,
+            sql`INSERT INTO audit_logs (id, actor_id, actor_email, action, entity_type, entity_id, metadata, created_at)
+              VALUES (gen_random_uuid(), ${s.sub}, ${s.email}, 'CLASS_INVITE_CREATED', 'class', ${id}, ${JSON.stringify({ max_uses: mu, expires_at: ea, invite_id: inviteId })}, now())`
+          ]);
+          return json({ invite: txResults[1]?.[0] }, 201);
         }
         if (b?.action === 'deactivate_invite') {
-          const rows = await sql`UPDATE class_invites SET is_active = false WHERE class_id = ${id} AND is_active = true RETURNING id, code, is_active, used_count, max_uses, expires_at`;
-          await writeAudit(s, 'CLASS_INVITE_DEACTIVATED', 'class', id, { count: rows.length });
-          return json({ invite: rows[0] || null });
+          const txResults = await sqlTransaction([
+            sql`UPDATE class_invites SET is_active = false WHERE class_id = ${id} AND is_active = true RETURNING id, code, is_active, used_count, max_uses, expires_at`,
+            sql`INSERT INTO audit_logs (id, actor_id, actor_email, action, entity_type, entity_id, metadata, created_at)
+              VALUES (gen_random_uuid(), ${s.sub}, ${s.email}, 'CLASS_INVITE_DEACTIVATED', 'class', ${id}, '{}'::jsonb, now())`
+          ]);
+          return json({ invite: txResults[0]?.[0] || null });
         }
         return err('Not found', 404);
       });
