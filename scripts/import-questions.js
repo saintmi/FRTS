@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import crypto from 'node:crypto';
-import { execSync } from 'node:child_process';
+import { execFileSync, execSync } from 'node:child_process';
 import { normalizeVocabularyFirstBank } from './lib/vocabulary-first-adapter.js';
 import { neon } from '@neondatabase/serverless';
 import { selectCanonicalBankJson, validateBankSource } from './lib/question-bank-validation.js';
@@ -47,7 +47,7 @@ function extractZip(zipPath, destDir) {
   if (process.platform === 'win32') {
     execSync(`powershell -NoProfile -Command "Expand-Archive -LiteralPath '${zipPath}' -DestinationPath '${destDir}' -Force"`, { stdio: 'pipe' });
   } else {
-    execSync('unzip', ['-q', zipPath, '-d', destDir], { stdio: 'pipe' });
+    execFileSync('unzip', ['-q', zipPath, '-d', destDir], { stdio: 'pipe' });
   }
 }
 
@@ -61,8 +61,8 @@ function findUniqueFile(dir, basename) {
     }
   }
   walk(dir);
-  if (matches.length !== 1) throw new Error('Expected exactly one ' + basename + '; found ' + matches.length + '.');
-  return matches[0];
+  if (matches.length > 1) throw new Error('Expected at most one ' + basename + '; found ' + matches.length + '.');
+  return matches[0] || null;
 }
 
 function findBankJson(dir) {
@@ -211,7 +211,7 @@ async function main() {
       }
 
       if (DRY_RUN) {
-        report.packages.push({ package: pkg.file, status: 'DRY_RUN', bank_id: norm.bank.source_bank_id, bank_version: norm.bank.package_version, sha256: archiveSha256, ...sourceCounts });
+        report.packages.push({ package: pkg.file, status: 'DRY_RUN', bank_id: norm.bank.source_bank_id, bank_version: norm.bank.package_version, sha256: archiveSha256, key_disposition: norm.keyDisposition || null, ...sourceCounts });
         report.total_sessions += norm.sessions.length;
         report.total_questions += norm.questions.length;
         continue;
