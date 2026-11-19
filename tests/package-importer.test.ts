@@ -30,23 +30,20 @@ const norm = {
 
 describe('atomic package importer', () => {
   it('runs all package writes through one transaction callback', async () => {
-    const session = { id: 'session-1', week: 1, session_no: 1, title: 'Session 1', total_questions: 1 };
-    const stimulus = { id: 'stimulus-1', content: 'Passage', content_type: 'text' };
-    const question = { id: 'question-1', session_id: 'session-1', stimulus_id: 'stimulus-1', type: 'multiple_choice', prompt: 'Choose', points: 1, status: 'DRAFT' };
-    const optionRows = norm.options.map(({question_source_id, ...o}) => o);
-    const key = { answer: { correct_value: 'A' }, explanation: 'Because A' };
     const stub = makeSqlStub([
-      [{id:'bank-1'}],
-      [], // new session
-      [], // new stimulus
-      [], // new question
+      [{ id: 'bank-1' }], // lock bank
+      [], // find session
+      [], // find stimulus
+      [], // find question
       [], // options absent
-      [], // key absent
+      [], // answer key absent
+      [], // update bank counts
+      [], // insert import ledger
     ]);
-    const result = await importPackageAtomically(stub.sql,'bank-1',norm,{file:'b.zip',sha256:'abc'});
+    const result = await importPackageAtomically(stub.sql, 'bank-1', norm, { file: 'b.zip', sha256: 'abc' });
     expect(stub.tx).toHaveBeenCalledOnce();
-    expect(result).toMatchObject({bank_id:'bank-1',sessions:1,questions:1});
-    expect(stub.calls.length).toBeGreaterThan(5);
+    expect(result).toMatchObject({ bank_id: 'bank-1', sessions: 1, questions: 1 });
+    expect(stub.calls).toHaveLength(8);
   });
 
   it('aborts when an existing session conflicts with the canonical package', async () => {
