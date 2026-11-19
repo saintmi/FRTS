@@ -439,3 +439,12 @@ These checks validate current rows only. They do not prove transaction safety, a
 - **No remediation is claimed in this iteration.** This iteration adds verified diagnostics and confirms where code changes are required. It does not justify a “100% final” declaration.
 - **Safety:** no SQL writes, DDL, migrations, imports, or production data changes were executed in this iteration.
 - **Next acceptance loop:** implement atomic submission with concurrency/idempotency tests; make critical audit durable; make migration/import execution atomic and source-manifest validated; add authenticated role-isolation and end-to-end lifecycle tests; rerun the complete regression suite and branch CI. Only after every acceptance gate passes should a PR be merged to `main`. Production DB rollout remains a separate controlled step.
+
+
+## 14. Remediation iteration — migration atomicity
+
+**Code change:** `scripts/migrate.js` now constructs a Neon transaction containing all statements for one migration plus the corresponding `schema_migrations` ledger insert. A statement failure is caught at the transaction boundary and the migration is reported as rolled back; the in-memory applied set is advanced only after the transaction succeeds. This addresses the previously identified partial-migration/ledger divergence risk, subject to runtime verification against the pinned Neon driver.
+
+**CI change:** `.github/workflows/ci.yml` now runs the existing lint/build/test job for pull requests targeting `main`, in addition to pushes to `main` and manual dispatch. This makes branch acceptance evidence available before merge.
+
+**Verification status:** Source-level change committed to `p0/evidence-backtest`. Runtime migration rollback test and CI run have not yet been observed. No migration was executed on Neon in this iteration. Do not treat this remediation as PASS until a disposable test migration proves that a deliberately failing statement rolls back earlier statements and leaves the ledger unchanged, and a successful migration commits both DDL and ledger together.
