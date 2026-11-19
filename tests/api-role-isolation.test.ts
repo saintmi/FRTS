@@ -78,4 +78,40 @@ describe('API role isolation', () => {
     expect(queryMock.mock.calls[0][0]).toContain('JOIN class_memberships');
     expect(queryMock.mock.calls[0][1]).toContain('00000000-0000-4000-8000-000000000001');
   });
+  it('writes class creation and its audit event in one transaction', async () => {
+    transactionMock.mockResolvedValue([
+      [{ id: 'class-created', name: 'New class', teacher_id: '00000000-0000-4000-8000-000000000001' }],
+      [],
+    ]);
+    const GET = await getHandler();
+    const response = await GET(new Request('http://localhost/api/classes', {
+      method: 'POST',
+      headers: {
+        cookie: 'frts_session=' + token('TEACHER'),
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({ name: 'New class' }),
+    }));
+    expect(response.status).toBe(201);
+    expect(transactionMock).toHaveBeenCalledOnce();
+    const [queries] = transactionMock.mock.calls[0];
+    expect(queries).toHaveLength(2);
+    expect(queries[0].strings.join('?')).toContain('INSERT INTO classes');
+    expect(queries[1].strings.join('?')).toContain('INSERT INTO audit_logs');
+  });
+
+  it('does not report a class mutation as successful when its audit transaction fails', async () => {
+    transactionMock.mockRejectedValue(new Error('injected audit failure'));
+    const GET = await getHandler();
+    await expect(GET(new Request('http://localhost/api/classes', {
+      method: 'POST',
+      headers: {
+        cookie: 'frts_session=' + token('TEACHER'),
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({ name: 'Must rollback' }),
+    }))).rejects.toThrow('injected audit failure');
+    expect(transactionMock).toHaveBeenCalledOnce();
+  });
+
 });
