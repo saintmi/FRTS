@@ -341,3 +341,58 @@ The four rows in public.question_banks are:
 7. Capture the test branch ID, SQL outputs, commit SHA, CI run, and test counts in the P0 acceptance evidence.
 
 No production writes, DDL, migration, content import, or data deletion were executed for this correction. All Neon SQL statements used for this section were read-only SELECT/catalog inspection.
+
+
+## 12. Isolated Neon test branch created for P0 backtests
+
+Following the owner's explicit instruction that all implementation work be tested separately and integrated into the main branch only after PASS, an isolated Neon branch and a matching GitHub working branch have been created.
+
+### 12.1 Neon branch
+
+| Property | Value |
+|---|---|
+| Project | les-tka-regency |
+| Project ID | super-dew-05104749 |
+| Parent branch | production |
+| Parent branch ID | br-proud-king-aom8fazl |
+| Test branch | p0-evidence-backtest |
+| Test branch ID | br-divine-mode-ao6yapik |
+| State | ready |
+| Parent snapshot LSN | 0/2494C20 |
+| Database | neondb |
+| Console | https://console.neon.tech/app/projects/super-dew-05104749/branches/br-divine-mode-ao6yapik |
+
+The branch was created from production data. An initial attempt to set a custom suspend timeout was rejected by account policy; the branch was then created successfully without overriding that setting. The test branch is not default and is not production.
+
+### 12.2 GitHub working branch
+
+| Property | Value |
+|---|---|
+| Repository | saintmi/FRTS |
+| Working branch | p0/evidence-backtest |
+| Base | main |
+
+Code and migration changes for this work are to be committed to this working branch. After the relevant test suite and CI pass, changes will be integrated into main through a reviewed pull request. A failing or partially tested change will not be merged.
+
+### 12.3 Initial isolated data-integrity backtest
+
+Read-only checks were run against the new Neon test branch, database neondb. The following checks returned zero failures:
+
+| Check | Failures | Result |
+|---|---:|---|
+| Learning sessions referencing missing banks | 0 | PASS |
+| Questions whose bank differs from their session bank | 0 | PASS |
+| Questions referencing missing sessions | 0 | PASS |
+| Questions whose stimulus belongs to another session | 0 | PASS |
+| Questions referencing missing stimuli | 0 | PASS |
+| Questions missing an answer-key row | 0 | PASS |
+| Questions without exactly four options | 0 | PASS |
+| Questions without exactly one each of A/B/C/D | 0 | PASS |
+
+These are data-state checks, not yet schema-enforced guarantees. The existing schema still has independent foreign keys for question bank, session, and stimulus. Additional constraints and their migration require implementation and validation on this test branch.
+
+### 12.4 Backtest boundary
+
+No INSERT, UPDATE, DELETE, DDL, migration, or content import was performed in this initial run. Production remains untouched. This initial PASS covers only the listed relational data checks on the cloned test snapshot; it does not close the submission concurrency, audit durability, authenticated role-isolation, importer transactionality, academic key approval, or complete Batch 1 acceptance blockers.
+
+The required integration rule is now explicit: do not merge code or migration changes into main until targeted tests, regression tests, and CI are PASS. Once merged, apply any approved database migration to production only through the separately verified release step, not as a side effect of merging code.
