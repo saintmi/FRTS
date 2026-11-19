@@ -448,3 +448,44 @@ These checks validate current rows only. They do not prove transaction safety, a
 **CI change:** `.github/workflows/ci.yml` now runs the existing lint/build/test job for pull requests targeting `main`, in addition to pushes to `main` and manual dispatch. This makes branch acceptance evidence available before merge.
 
 **Verification status:** Source-level change committed to `p0/evidence-backtest`. Runtime migration rollback test and CI run have not yet been observed. No migration was executed on Neon in this iteration. Do not treat this remediation as PASS until a disposable test migration proves that a deliberately failing statement rolls back earlier statements and leaves the ledger unchanged, and a successful migration commits both DDL and ledger together.
+
+## 15. Iteration — submission guard, CI, and parallel Neon integrity backtest
+
+**Code revision:** `api/[[...slug]].ts`, commit `56f2ff3d882016fed798e5d33c9c95617f30454b`.
+
+The attempt submission path now begins its write transaction by locking the attempt row (`SELECT ... FOR UPDATE`) and conditionally claiming the `in_progress` state as `submitting`. Answer inserts, optional formative vocabulary event, final transition to `submitted`, receipt, and the `ATTEMPT_SUBMITTED` audit row are then guarded and executed in that transaction. A request that cannot finalize returns a conflict (or the prior receipt response for an idempotent retry). This removes the former post-commit best-effort audit call from the submission path.
+
+**Verification boundary:** this is a source-level concurrency remediation, not yet a runtime PASS. A two-client concurrent API integration test and failure-injection test are still required to prove exactly-one-winner semantics with the deployed Neon driver. The general `writeAudit()` helper remains best-effort for other audited operations; those workflows are not closed by this change.
+
+### Parallel read-only Neon backtest
+
+Environment: `les-tka-regency` / `p0-evidence-backtest` / `neondb`. Ten independent checks were run in parallel. All returned `failures = 0`:
+
+| Check | Failures |
+|---|---:|
+| Question bank/session ownership mismatch | 0 |
+| Question/stimulus session mismatch | 0 |
+| Duplicate source question IDs within a bank | 0 |
+| Missing answer-key rows | 0 |
+| Question option count other than four | 0 |
+| A/B/C/D labels not present exactly once | 0 |
+| Submitted attempts without receipt | 0 |
+| Receipt attached to non-submitted attempt | 0 |
+| Attempts with multiple receipts | 0 |
+| Attempt answer linked to a different source bank/session than its assignment | 0 |
+
+These checks describe the current cloned data only; they do not establish schema-level prevention or transaction behavior. No production SQL was run.
+
+### CI result
+
+GitHub Actions PR run `44519279563` on head `56f2ff3d882016fed798e5d33c9c95617f30454b` completed successfully: dependency installation, lint, TypeScript/Vite build, and Vitest all passed.
+
+### Remaining acceptance blockers
+
+- Add real concurrent submission and idempotency tests, plus audit failure injection.
+- Verify migration transaction rollback and successful ledger commit on a disposable test migration.
+- Harden importer: exact-one canonical JSON selection, identity/version assertions, full structural preflight and manifest, conflict detection, and atomic package import; add rollback/idempotency tests.
+- Add authenticated role-isolation and full attempt/report lifecycle integration tests.
+- Complete Batch 1 canonical source, answer-key, vocabulary, recycled provenance, item-quality, and app synchronization acceptance.
+
+**Disposition:** P0 remains `ACCEPTANCE_BLOCKED`. CI PASS and ten zero-row-failure integrity queries do not constitute 100% product acceptance. No production branch writes, imports, migrations, or merges were performed.
