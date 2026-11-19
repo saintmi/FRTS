@@ -36,12 +36,15 @@ export function splitStatements(sqlText) {
     }
     if (inDollar) {
       buf += ch;
-      // check for closing $tag$
+      // Check for the matching closing $tag$ delimiter.
       if (ch === '$') {
         const candidate = sqlText.slice(i);
         const m = candidate.match(/^(\$\w*\$)/);
         if (m && m[1] === '$' + dollarTag + '$') {
-          // The current '
+          // The current '$' is already in buf; append the rest exactly once.
+          buf += m[1].slice(1);
+          i += m[1].length;
+          inDollar = false;
           continue;
         }
       }
