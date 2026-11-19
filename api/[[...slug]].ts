@@ -3,6 +3,7 @@ import jwt from 'jsonwebtoken';
 import bcrypt from 'bcryptjs';
 import { parse, serialize } from 'cookie';
 import crypto from 'crypto';
+import { getFinalizedResultIndex } from '../scripts/lib/transaction-builders.js';
 
 let databaseUrl: string | undefined;
 function gdu(): string { if (databaseUrl) return databaseUrl; const u = process.env.DATABASE_URL; if (!u) throw new Error('DATABASE_URL not defined'); databaseUrl = u; return u; }
@@ -55,8 +56,9 @@ async function validateCanonicalHtmlModule(module: any): Promise<{ ok: boolean; 
 }
 
 async function writeAudit(session: Session, action: string, entityType: string, entityId: string | null, metadata: any = {}) {
-  try { await sql`INSERT INTO audit_logs (id, actor_id, actor_email, action, entity_type, entity_id, metadata, created_at) VALUES (gen_random_uuid(), ${session.sub}, ${session.email}, ${action}, ${entityType}, ${entityId}, ${JSON.stringify(metadata)}, now())`; }
-  catch { /* audit failure must not interrupt core workflows */ }
+  // Required audit events must not be silently discarded. Callers handling
+  // critical mutations should include audit rows in the same DB transaction.
+  await sql`INSERT INTO audit_logs (id, actor_id, actor_email, action, entity_type, entity_id, metadata, created_at) VALUES (gen_random_uuid(), ${session.sub}, ${session.email}, ${action}, ${entityType}, ${entityId}, ${JSON.stringify(metadata)}, now())`;
 }
 async function getBody(req: Request): Promise<any> {
   const ct = req.headers.get('content-type') || '';
@@ -754,7 +756,7 @@ async function dispatch(req: Request): Promise<Response> {
             SELECT gen_random_uuid(), ${s.sub}, ${s.email}, 'ATTEMPT_SUBMITTED', 'attempt', ${id}, ${JSON.stringify({ source_session_id: sourceSessionId, score: ts, max_score: ms })}, now()
             WHERE EXISTS (SELECT 1 FROM submission_receipts WHERE attempt_id = ${id} AND receipt_id = ${rid})`);
           const txResults = await sqlTransaction(transactionQueries);
-          const finalized = txResults[txResults.length - 3];
+          const finalized = txResults[getFinalizedResultIndex(txResults.length)];
           if (!finalized?.length) {
             const existingReceipt = ik ? await sql`SELECT receipt_id FROM submission_receipts WHERE attempt_id = ${id} AND receipt_id = ${ik}` : [];
             if (existingReceipt[0]) {
