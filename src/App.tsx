@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react';
 import { Routes, Route, Link, Navigate, useNavigate, useParams } from 'react-router-dom';
 import { AuthProvider, useAuth } from './contexts/AuthContext';
 import { getJSON, postJSON, postForm } from './lib/apiClient';
-import { AdminDashboardPage, AdminUsersPage, AdminClassesPage, AdminContentPage, AdminReviewPage, AdminAuditPage, AdminReportsPage, TeacherDashboardPage, TeacherHtmlBankPage, TeacherReportsPage, StudentDashboardPage, AssessmentViewerPage } from './pages/DashboardPages';
+import { AdminDashboardPage, AdminUsersPage, AdminClassesPage, AdminContentPage, AdminReviewPage, AdminAuditPage, AdminReportsPage, TeacherDashboardPage, TeacherHtmlBankPage, TeacherReportsPage, StudentDashboardPage, AssessmentViewerPage, LlmAssistantPage } from './pages/DashboardPages';
 
 function Nav() {
   const { user, logout, loading } = useAuth();
@@ -12,13 +12,13 @@ function Nav() {
       <span className="brand">FRTS</span>
       <div className="nav-links">
         {user.role === 'ADMIN' && <>
-          <Link to="/admin">Dashboard</Link><Link to="/admin/users">Pengguna</Link><Link to="/admin/classes">Kelas</Link><Link to="/admin/content">Bank HTML</Link><Link to="/admin/review">Review</Link><Link to="/admin/audit">Audit Log</Link><Link to="/admin/reports">Laporan</Link>
+          <Link to="/admin">Dashboard</Link><Link to="/admin/users">Pengguna</Link><Link to="/admin/classes">Kelas</Link><Link to="/admin/content">Bank HTML</Link><Link to="/admin/review">Review</Link><Link to="/admin/audit">Audit Log</Link><Link to="/admin/reports">Laporan</Link><Link to="/ai">AI Workspace</Link>
         </>}
         {user.role === 'TEACHER' && <>
-          <Link to="/teacher">Dashboard</Link><Link to="/teacher/classes">Kelas</Link><Link to="/teacher/html-library">Materi</Link><Link to="/teacher/html-bank">Bank HTML</Link><Link to="/teacher/reports">Laporan</Link>
+          <Link to="/teacher">Dashboard</Link><Link to="/teacher/classes">Kelas</Link><Link to="/teacher/html-library">Materi</Link><Link to="/teacher/html-bank">Bank HTML</Link><Link to="/teacher/reports">Laporan</Link><Link to="/ai">AI Workspace</Link>
         </>}
         {user.role === 'STUDENT' && <>
-          <Link to="/student">Dashboard</Link><Link to="/student/classes">Kelas Saya</Link><Link to="/student/assignments">Latihan</Link><Link to="/student/progress">Progres</Link>
+          <Link to="/student">Dashboard</Link><Link to="/student/classes">Kelas Saya</Link><Link to="/student/assignments">Latihan</Link><Link to="/student/progress">Progres</Link><Link to="/ai">AI Tutor</Link>
         </>}
       </div>
       <div className="spacer"></div><span className="muted small">{user.email}</span>
@@ -85,6 +85,7 @@ export default function App() {
         <Nav />
         <Routes>
           <Route path="/login" element={<Login />} />
+          <Route path="/ai" element={<RoleGate roles={['ADMIN','TEACHER','STUDENT']}><LlmAssistantPage /></RoleGate>} />
           <Route path="/" element={<Home />} />
           <Route path="/admin" element={<RoleGate roles={['ADMIN']}><AdminDashboardPage /></RoleGate>} />
           <Route path="/admin/users" element={<RoleGate roles={['ADMIN']}><AdminUsersPage /></RoleGate>} />
