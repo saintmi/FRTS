@@ -26,7 +26,13 @@ async function getHandler() {
 function makeSql() {
   const tag = (strings: TemplateStringsArray, ...values: unknown[]) => {
     queryMock(strings.join('?'), values);
-    return Promise.resolve([{ id: 'class-1', name: 'Scoped class', teacher_id: '00000000-0000-4000-8000-000000000001' }]);
+    return {
+      strings: [...strings],
+      values,
+      then(resolve: (value: unknown[]) => unknown, reject: (reason: unknown) => unknown) {
+        return Promise.resolve([{ id: 'class-1', name: 'Scoped class', teacher_id: '00000000-0000-4000-8000-000000000001' }]).then(resolve, reject);
+      },
+    };
   };
   (tag as any).transaction = transactionMock;
   return tag;
