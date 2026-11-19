@@ -101,7 +101,7 @@ function normalizeBank(bankRaw, sourcePackage, packageVersion) {
           question_source_id: q.id,
           label: opt.value != null ? String(opt.value) : null,
           text: opt.label || null,
-          is_correct: opt.value === correctValue,
+          is_correct: String(opt.value ?? '').trim().toUpperCase() === String(correctValue ?? '').trim().toUpperCase(),
           sort_order: i,
         });
       });
