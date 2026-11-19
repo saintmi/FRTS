@@ -589,3 +589,35 @@ The disposable child branch had already executed the earlier migration-006 revis
 ## 25. Import CLI environment loading hardening (19 November 2026)
 
 Reviewing the actual importer entry point found that `loadEnv()` unconditionally read a local `.env` file and ignored already-injected process environment variables. This prevented running the CLI in CI or other managed environments where `DATABASE_URL` is provided as a secret/environment variable and no `.env` file exists. Updated the loader so process environment values take precedence, `.env` is optional, and a missing `DATABASE_URL` produces an explicit configuration error. This does not expose or log the connection string and does not initiate a database connection during validation. Runtime CLI acceptance remains open until executed against the disposable Neon child branch with the actual installed driver.
+
+
+## 26. Final acceptance backtest update — 20 November 2026
+
+### Verified on current PR head
+
+- PR #3 head commit: `655a24a3599fdf2c41258e8e08daac2d9f3df596`.
+- GitHub Actions run `44599265723`: **PASS**.
+- Lint: 0 errors, 93 warnings.
+- TypeScript + Vite production build: PASS.
+- Automated tests: **39/39 PASS**, 6 files:
+  - `package-importer.test.ts`: 2
+  - `transaction-builders.test.ts`: 6
+  - `question-bank-validation.test.ts`: 7
+  - `api-role-isolation.test.ts`: 6
+  - `workflow.test.ts`: 14
+  - `sql-splitter.test.ts`: 4
+- Hardened migration 006 to create the option-order unique index only when no equivalent unique index exists on exactly `(question_id, sort_order)`. This makes a clean baseline schema satisfy the importer's conflict target while avoiding a duplicate index on databases that already have it.
+- Ran the conditional index block on disposable child branch `br-billowing-moon-ao18x47o`; it completed successfully and did not create another index because an equivalent unique index was already present.
+- Read-only inventory on that child branch: 4 banks, 38 sessions, 100 stimuli, 764 questions, 3,056 options, 764 answer keys, 4 content-import history rows; no duplicate option positions were returned by the duplicate-position probe.
+- Updated `scripts/migrate.js` so the migration CLI accepts injected `DATABASE_URL`, treats `.env` as optional, and fails explicitly when the connection setting is absent.
+
+### Acceptance gates still OPEN — do not merge
+
+1. **Actual migration CLI runtime:** The Node CLI has not yet been executed end-to-end against a fresh disposable Neon database with the installed `@neondatabase/serverless` driver. CI validates build and unit tests, not the live CLI.
+2. **Actual package importer runtime:** The importer tests assert generated parameterized query descriptors and transaction configuration with a mock. The exact approved Batch 1 archive and approved manifest are not present in `content/imports` (only its README is tracked), so no exact-package import, repeat-import idempotency, or changed-source conflict test has been run.
+3. **Authenticated HTTP integration:** Existing role tests use a mocked Neon driver. The database concurrency and rollback evidence in Section 20 validates the SQL transaction pattern, but two authenticated HTTP submissions and full admin/teacher/student workflows have not been executed through the API handler.
+4. **Fresh-schema migration backtest:** The current disposable branch inherits a database that already has the option-order index. The migration's conditional branch was exercised on this existing-schema case; an empty/fresh database case has not yet been provisioned and run.
+
+### Decision
+
+**Phase 0 remains `ACCEPTANCE_BLOCKED`. PR #3 remains Draft and unmerged.** The latest CI PASS is necessary but not sufficient to certify all release gates. No production database migration, content import, or production write was executed. The current test child branch was the only Neon target used for database probes.
