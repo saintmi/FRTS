@@ -170,7 +170,7 @@ export function buildPackageImportQueries(sql, norm, pkg) {
     (id, package_name, package_version, status, total_questions, total_sessions, imported_questions, report, created_at)
     SELECT gen_random_uuid(), ${sourcePackage}, ${bankVersion}, 'COMPLETED',
       ${norm.totalQuestions}, ${norm.sessions.length}, ${norm.totalQuestions},
-      ${JSON.stringify({ bank_id: sourceBankId, source_sha256: pkg.sha256 })}::jsonb, now()
+      ${JSON.stringify({ bank_id: sourceBankId, source_sha256: pkg.sha256, key_disposition: pkg.keyDisposition })}::jsonb, now()
     WHERE NOT EXISTS (
       SELECT 1 FROM content_imports ci
       WHERE ci.package_name = ${sourcePackage}
