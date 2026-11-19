@@ -2,8 +2,6 @@ export function buildPackageImportQueries(sql, norm, pkg) {
   const sourcePackage = pkg.file;
   const sourceBankId = norm.bank.source_bank_id;
   const bankVersion = norm.bank.package_version;
-  const bankLookupSql = sql`SELECT id FROM question_banks WHERE source_package = ${sourcePackage}
-    AND source_bank_id = ${sourceBankId} AND package_version = ${bankVersion}`;
   const queries = [];
 
   // Bank, all child rows and import history are created in the same transaction.
