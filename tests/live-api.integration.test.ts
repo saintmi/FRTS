@@ -80,13 +80,15 @@ suite('Live API backtest against disposable Neon database', () => {
     }
 
     const classOne = await sql`
-      INSERT INTO classes (name, description, teacher_id)
-      VALUES ('Backtest Class One', 'Disposable role-isolation fixture', ${ids.teacherOne})
+      INSERT INTO classes (id, name, description, teacher_id)
+      VALUES ('90000000-0000-4000-8000-000000000006', 'Backtest Class One', 'Disposable role-isolation fixture', ${ids.teacherOne})
+      ON CONFLICT (id) DO UPDATE SET name = EXCLUDED.name, description = EXCLUDED.description, teacher_id = EXCLUDED.teacher_id
       RETURNING id
     `;
     const classTwo = await sql`
-      INSERT INTO classes (name, description, teacher_id)
-      VALUES ('Backtest Class Two', 'Disposable role-isolation fixture', ${ids.teacherTwo})
+      INSERT INTO classes (id, name, description, teacher_id)
+      VALUES ('90000000-0000-4000-8000-000000000007', 'Backtest Class Two', 'Disposable role-isolation fixture', ${ids.teacherTwo})
+      ON CONFLICT (id) DO UPDATE SET name = EXCLUDED.name, description = EXCLUDED.description, teacher_id = EXCLUDED.teacher_id
       RETURNING id
     `;
     ids.classOne = classOne[0].id;
@@ -100,18 +102,21 @@ suite('Live API backtest against disposable Neon database', () => {
     `;
 
     const bank = await sql`
-      INSERT INTO question_banks (name, status, total_questions, total_sessions)
-      VALUES ('P0 Live API Mock Bank', 'APPROVED', 1, 1)
+      INSERT INTO question_banks (id, name, status, total_questions, total_sessions)
+      VALUES ('90000000-0000-4000-8000-000000000008', 'P0 Live API Mock Bank', 'APPROVED', 1, 1)
+      ON CONFLICT (id) DO UPDATE SET name = EXCLUDED.name, status = EXCLUDED.status, total_questions = 1, total_sessions = 1
       RETURNING id
     `;
     const session = await sql`
-      INSERT INTO learning_sessions (bank_id, source_session_id, total_questions, title)
-      VALUES (${bank[0].id}, NULL, 1, 'P0 Live API Mock Session')
+      INSERT INTO learning_sessions (id, bank_id, source_session_id, total_questions, title)
+      VALUES ('90000000-0000-4000-8000-000000000009', ${bank[0].id}, NULL, 1, 'P0 Live API Mock Session')
+      ON CONFLICT (id) DO UPDATE SET bank_id = EXCLUDED.bank_id, total_questions = 1, title = EXCLUDED.title
       RETURNING id
     `;
     const question = await sql`
-      INSERT INTO questions (bank_id, session_id, type, prompt, points, status)
-      VALUES (${bank[0].id}, ${session[0].id}, 'multiple_choice', 'Mock question for API backtest', 1, 'APPROVED')
+      INSERT INTO questions (id, bank_id, session_id, type, prompt, points, status)
+      VALUES ('90000000-0000-4000-8000-000000000010', ${bank[0].id}, ${session[0].id}, 'multiple_choice', 'Mock question for API backtest', 1, 'APPROVED')
+      ON CONFLICT (id) DO UPDATE SET bank_id = EXCLUDED.bank_id, session_id = EXCLUDED.session_id, prompt = EXCLUDED.prompt, points = 1, status = 'APPROVED'
       RETURNING id
     `;
     questionId = question[0].id;
@@ -119,6 +124,7 @@ suite('Live API backtest against disposable Neon database', () => {
       INSERT INTO question_options (question_id, label, text, is_correct, sort_order)
       VALUES (${questionId}, 'A', 'Incorrect option', false, 0),
              (${questionId}, 'B', 'Correct option', true, 1)
+      ON CONFLICT (question_id, sort_order) DO UPDATE SET label = EXCLUDED.label, text = EXCLUDED.text, is_correct = EXCLUDED.is_correct
     `;
     await sql`
       INSERT INTO question_answer_keys (question_id, answer, explanation)
@@ -127,8 +133,9 @@ suite('Live API backtest against disposable Neon database', () => {
     `;
 
     const module = await sql`
-      INSERT INTO html_modules (title, description, version, content, checksum, uploaded_by, status, is_published)
-      VALUES ('P0 Live API Mock Module', 'Disposable integration fixture', 1, '<main>Mock lesson</main>', 'p0-live-api-mock', ${ids.admin}, 'APPROVED', true)
+      INSERT INTO html_modules (id, title, description, version, content, checksum, uploaded_by, status, is_published)
+      VALUES ('90000000-0000-4000-8000-000000000011', 'P0 Live API Mock Module', 'Disposable integration fixture', 1, '<main>Mock lesson</main>', 'p0-live-api-mock', ${ids.admin}, 'APPROVED', true)
+      ON CONFLICT (id) DO UPDATE SET title = EXCLUDED.title, description = EXCLUDED.description, content = EXCLUDED.content, checksum = EXCLUDED.checksum, uploaded_by = EXCLUDED.uploaded_by, status = 'APPROVED', is_published = true
       RETURNING id
     `;
     ids.module = module[0].id;
