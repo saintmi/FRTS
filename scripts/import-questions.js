@@ -2,17 +2,25 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import crypto from 'node:crypto';
-import { execSync } from 'node:child_process';
-import { neon } from '@neondatabase/serverless';
+import { execFileSync, execSync } from 'node:child_process';
+import { normalizeVocabularyFirstBank } from './lib/vocabulary-first-adapter.js';
+import { selectCanonicalBankJson, validateBankSource } from './lib/question-bank-validation.js';
+import { importPackageAtomically } from './lib/package-importer.js';
 
 function stripBom(s) { return s.replace(/^\uFEFF/, ''); }
 function loadEnv() {
-  const raw = fs.readFileSync(path.resolve(process.cwd(), '.env'), 'utf8');
-  const env = {};
-  for (const line of stripBom(raw).split('\n')) {
-    const m = line.match(/^([^=]+)=(.*)$/);
-    if (m) env[m[1].trim()] = m[2].trim();
+  // CI/deployment environments inject secrets directly; local development may
+  // still use .env. Explicit process environment values always take precedence.
+  const env = { ...process.env };
+  const envPath = path.resolve(process.cwd(), '.env');
+  if (fs.existsSync(envPath)) {
+    const raw = fs.readFileSync(envPath, 'utf8');
+    for (const line of stripBom(raw).split('\n')) {
+      const m = line.match(/^\s*([^#=\s]+)\s*=\s*(.*)\s*$/);
+      if (m && env[m[1]] === undefined) env[m[1]] = m[2].replace(/^(['"])(.*)\1$/, '$2');
+    }
   }
+  if (!env.DATABASE_URL) throw new Error('DATABASE_URL is required (set it in the environment or .env).');
   return env;
 }
 
@@ -35,22 +43,38 @@ const PACKAGES = [
 
 function extractZip(zipPath, destDir) {
   fs.mkdirSync(destDir, { recursive: true });
-  execSync(`powershell -NoProfile -Command "Expand-Archive -LiteralPath '${zipPath}' -DestinationPath '${destDir}' -Force"`, { stdio: 'pipe' });
+  if (process.platform === 'win32') {
+    execSync(`powershell -NoProfile -Command "Expand-Archive -LiteralPath '${zipPath}' -DestinationPath '${destDir}' -Force"`, { stdio: 'pipe' });
+  } else {
+    execFileSync('unzip', ['-q', zipPath, '-d', destDir], { stdio: 'pipe' });
+  }
+}
+
+function findUniqueFile(dir, basename) {
+  const matches = [];
+  function walk(d) {
+    for (const entry of fs.readdirSync(d, { withFileTypes: true })) {
+      const full = path.join(d, entry.name);
+      if (entry.isDirectory()) walk(full);
+      else if (entry.name === basename) matches.push(full);
+    }
+  }
+  walk(dir);
+  if (matches.length > 1) throw new Error('Expected at most one ' + basename + '; found ' + matches.length + '.');
+  return matches[0] || null;
 }
 
 function findBankJson(dir) {
-  let result = null;
+  const matches = [];
   function walk(d) {
     for (const entry of fs.readdirSync(d, { withFileTypes: true })) {
       const full = path.join(d, entry.name);
       if (entry.isDirectory()) { walk(full); continue; }
-      if (entry.name.toLowerCase().endsWith('.json') && entry.name.toLowerCase().includes('question_bank')) {
-        result = full;
-      }
+      if (entry.name.toLowerCase().endsWith('.json') && entry.name.toLowerCase().includes('question_bank')) matches.push(full);
     }
   }
   walk(dir);
-  return result;
+  return selectCanonicalBankJson(matches);
 }
 
 function mapBankStatus(raw) {
@@ -59,6 +83,28 @@ function mapBankStatus(raw) {
   if (s.includes('ARCHIVED')) return 'ARCHIVED';
   if (s.includes('REVIEW')) return 'REVIEW_REQUIRED';
   return 'IMPORTED';
+}
+
+function assertApprovedPackage(manifestPath, packageFile, sha256, bankId, bankVersion) {
+  if (!fs.existsSync(manifestPath)) {
+    throw new Error('Approved package manifest is missing. Create content/imports/approved-package-manifest.json before any non-dry-run import.');
+  }
+  const manifest = JSON.parse(stripBom(fs.readFileSync(manifestPath, 'utf8')));
+  const approval = manifest?.packages?.[packageFile];
+  if (!approval || approval.approval_status !== 'APPROVED') {
+    throw new Error('Package is not explicitly approved in the package manifest: ' + packageFile);
+  }
+  if (String(approval.sha256 || '').toLowerCase() !== sha256.toLowerCase()) {
+    throw new Error('Package SHA-256 does not match the approved manifest: ' + packageFile);
+  }
+  if (String(approval.bank_id || '') !== String(bankId) ||
+      String(approval.bank_version || '') !== String(bankVersion)) {
+    throw new Error('Bank identity/version does not match the approved manifest: ' + packageFile);
+  }
+  if (!approval.approved_by || !approval.approved_at) {
+    throw new Error('Manifest approval must include approved_by and approved_at: ' + packageFile);
+  }
+  return approval;
 }
 
 function normalizeBank(bankRaw, sourcePackage, packageVersion) {
@@ -102,7 +148,7 @@ function normalizeBank(bankRaw, sourcePackage, packageVersion) {
           question_source_id: q.id,
           label: opt.value != null ? String(opt.value) : null,
           text: opt.label || null,
-          is_correct: opt.value === correctValue,
+          is_correct: String(opt.value ?? '').trim().toUpperCase() === String(correctValue ?? '').trim().toUpperCase(),
           sort_order: i,
         });
       });
@@ -119,12 +165,12 @@ function normalizeBank(bankRaw, sourcePackage, packageVersion) {
 }
 
 async function main() {
-  const env = loadEnv();
-  const sql = neon(env.DATABASE_URL);
+  const env = DRY_RUN ? {} : loadEnv();
+  const sql = DRY_RUN ? null : (await import('@neondatabase/serverless')).neon(env.DATABASE_URL);
   const report = { packages: [], total_sessions: 0, total_questions: 0, imported_questions: 0, skipped: 0, errors: [] };
 
   const activePackages = packageArg
-    ? [{ file: packageArg, bankVersion: packageVersionArg || '0.4' }]
+    ? [{ file: packageArg, bankVersion: packageVersionArg || (packageArg.includes('v0.6.1') ? '0.6.1' : '0.4') }]
     : PACKAGES;
 
   for (const pkg of activePackages) {
@@ -137,89 +183,55 @@ async function main() {
     const tmpDir = path.resolve(os.tmpdir(), 'frts-import-' + crypto.randomBytes(4).toString('hex'));
     try {
       extractZip(zipPath, tmpDir);
-      const bankJson = findBankJson(tmpDir);
-      if (!bankJson) {
-        report.errors.push({ package: pkg.file, error: 'No question bank JSON found' });
-        report.packages.push({ package: pkg.file, status: 'NO_JSON' });
-        continue;
+      const archiveSha256 = crypto.createHash('sha256').update(fs.readFileSync(zipPath)).digest('hex');
+      let norm;
+      let sourceCounts;
+      const studentBankPath = findUniqueFile(tmpDir, 'FRTS_Batch_01_Student_Bank_v0.6.1.json');
+      const teacherKeysPath = findUniqueFile(tmpDir, 'FRTS_Batch_01_Teacher_Key_v0.6.1.json');
+      if (studentBankPath && teacherKeysPath) {
+        const studentBank = JSON.parse(stripBom(fs.readFileSync(studentBankPath, 'utf8')));
+        const teacherKeys = JSON.parse(stripBom(fs.readFileSync(teacherKeysPath, 'utf8')));
+        norm = normalizeVocabularyFirstBank(studentBank, teacherKeys, pkg.file, packageVersionArg || pkg.bankVersion);
+        sourceCounts = {
+          bank_id: norm.bank.source_bank_id,
+          bank_version: norm.bank.package_version,
+          sessions: norm.sessions.length,
+          questions: norm.questions.length,
+          stimuli: norm.stimuli.length,
+          official_source_keys: norm.keyDisposition.official_source_keys,
+          proposed_keys_excluded_from_official_scoring: norm.keyDisposition.proposed_keys_excluded_from_official_scoring,
+        };
+      } else {
+        const bankJson = findBankJson(tmpDir);
+        if (!bankJson) throw new Error('No supported question bank source files found');
+        const bankRaw = JSON.parse(stripBom(fs.readFileSync(bankJson, 'utf8')));
+        sourceCounts = validateBankSource(bankRaw, packageVersionArg || pkg.bankVersion);
+        norm = normalizeBank(bankRaw, pkg.file, packageVersionArg || pkg.bankVersion);
       }
-      const bankRaw = JSON.parse(stripBom(fs.readFileSync(bankJson, 'utf8')));
-      const norm = normalizeBank(bankRaw, pkg.file, pkg.bankVersion);
 
       if (DRY_RUN) {
-        report.packages.push({ package: pkg.file, status: 'DRY_RUN', sessions: norm.sessions.length, questions: norm.questions.length });
+        report.packages.push({ package: pkg.file, status: 'DRY_RUN', bank_id: norm.bank.source_bank_id, bank_version: norm.bank.package_version, sha256: archiveSha256, key_disposition: norm.keyDisposition || null, ...sourceCounts });
         report.total_sessions += norm.sessions.length;
         report.total_questions += norm.questions.length;
         continue;
       }
 
-      // Upsert bank (idempotent)
-      let bankRow = await sql`SELECT id FROM question_banks WHERE source_package = ${pkg.file} AND source_bank_id = ${norm.bank.source_bank_id} AND package_version = ${norm.bank.package_version}`;
-      if (!bankRow[0]) {
-        const ins = await sql`INSERT INTO question_banks (id, name, source_package, source_bank_id, package_version, status, total_questions, total_sessions, created_at)
-          VALUES (gen_random_uuid(), ${norm.bank.name}, ${norm.bank.source_package}, ${norm.bank.source_bank_id}, ${norm.bank.package_version}, ${norm.bank.status}, ${norm.totalQuestions}, 0, now())
-          RETURNING id`;
-        bankRow = ins;
-      }
-      const bankId = bankRow[0].id;
+      // A non-dry-run import is permitted only when owner-approved exact
+      // package bytes and source bank identity are allowlisted.
+      const manifestPath = path.join(IMPORTS_DIR, 'approved-package-manifest.json');
+      assertApprovedPackage(
+        manifestPath,
+        pkg.file,
+        archiveSha256,
+        norm.bank.source_bank_id,
+        norm.bank.package_version
+      );
+      const pkgMeta = { file: pkg.file, sha256: archiveSha256, keyDisposition: norm.keyDisposition || null };
+      await importPackageAtomically(sql, norm, pkgMeta);
+      const bankSessions = norm.sessions.length;
+      const bankQuestions = norm.questions.length;
 
-      let bankSessions = 0, bankQuestions = 0;
-      const sessionMap = new Map();
-      for (const s of norm.sessions) {
-        let sr = await sql`SELECT id FROM learning_sessions WHERE bank_id = ${bankId} AND source_session_id = ${s.source_session_id}`;
-        if (!sr[0]) {
-          const ins = await sql`INSERT INTO learning_sessions (id, bank_id, source_session_id, week, session_no, title, total_questions, created_at)
-            VALUES (gen_random_uuid(), ${bankId}, ${s.source_session_id}, ${s.week}, ${s.session_no}, ${s.title}, ${s.total_questions}, now()) RETURNING id`;
-          sr = ins;
-        }
-        sessionMap.set(s.source_session_id, sr[0].id);
-        bankSessions++;
-      }
-      const stimulusMap = new Map();
-      for (const st of norm.stimuli) {
-        const sid = sessionMap.get(st.session_id);
-        if (!sid) continue;
-        let sr = await sql`SELECT id FROM stimuli WHERE session_id = ${sid} AND source_stimulus_id = ${st.source_stimulus_id}`;
-        if (!sr[0]) {
-          const ins = await sql`INSERT INTO stimuli (id, session_id, source_stimulus_id, content, content_type, created_at)
-            VALUES (gen_random_uuid(), ${sid}, ${st.source_stimulus_id}, ${st.content}, ${st.content_type}, now()) RETURNING id`;
-          sr = ins;
-        }
-        stimulusMap.set(st.source_stimulus_id, sr[0].id);
-      }
-      for (const q of norm.questions) {
-        const sid = sessionMap.get(q.session_id);
-        let qr = await sql`SELECT id FROM questions WHERE bank_id = ${bankId} AND source_question_id = ${q.source_question_id}`;
-        if (!qr[0]) {
-          const stimId = q.stimulus_id ? stimulusMap.get(q.stimulus_id) : null;
-          const ins = await sql`INSERT INTO questions (id, bank_id, session_id, stimulus_id, source_question_id, type, prompt, points, status, created_at)
-            VALUES (gen_random_uuid(), ${bankId}, ${sid || null}, ${stimId || null}, ${q.source_question_id}, ${q.type}, ${q.prompt}, ${q.points}, ${q.status}, now()) RETURNING id`;
-          qr = ins;
-        }
-        const qId = qr[0].id;
-        bankQuestions++;
-        for (const o of norm.options.filter(x => x.question_source_id === q.source_question_id)) {
-          let or = await sql`SELECT id FROM question_options WHERE question_id = ${qId} AND sort_order = ${o.sort_order}`;
-          if (!or[0]) {
-            await sql`INSERT INTO question_options (id, question_id, label, text, is_correct, sort_order, created_at)
-              VALUES (gen_random_uuid(), ${qId}, ${o.label}, ${o.text}, ${o.is_correct}, ${o.sort_order}, now())`;
-          }
-        }
-        const key = norm.answerKeys.find(k => k.question_source_id === q.source_question_id);
-        if (key) {
-          let kr = await sql`SELECT id FROM question_answer_keys WHERE question_id = ${qId}`;
-          if (!kr[0]) {
-            await sql`INSERT INTO question_answer_keys (id, question_id, answer, explanation, created_at)
-              VALUES (gen_random_uuid(), ${qId}, ${JSON.stringify(key.answer)}, ${key.explanation}, now())`;
-          }
-        }
-      }
-
-      await sql`UPDATE question_banks SET total_sessions = ${bankSessions}, total_questions = ${bankQuestions} WHERE id = ${bankId}`;
-      await sql`INSERT INTO content_imports (id, package_name, package_version, status, total_questions, total_sessions, imported_questions, report, created_at)
-        VALUES (gen_random_uuid(), ${pkg.file}, ${pkg.bankVersion}, 'COMPLETED', ${norm.totalQuestions}, ${bankSessions}, ${bankQuestions}, ${JSON.stringify({ sessions: norm.sessions.length, questions: norm.questions.length })}, now())`;
-
-      report.packages.push({ package: pkg.file, status: 'IMPORTED', bank_id: norm.bank.source_bank_id, sessions: bankSessions, questions: bankQuestions });
+      report.packages.push({ package: pkg.file, status: 'IMPORTED', bank_id: norm.bank.source_bank_id, bank_version: norm.bank.package_version, sha256: archiveSha256, sessions: bankSessions, questions: bankQuestions });
       report.total_sessions += bankSessions;
       report.total_questions += norm.totalQuestions;
       report.imported_questions += bankQuestions;

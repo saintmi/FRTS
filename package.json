@@ -12,7 +12,8 @@
     "migrate": "node scripts/migrate.js",
     "import": "node scripts/import-questions.js",
     "seed": "node scripts/seed.js",
-    "vercel-build": "vite build"
+    "vercel-build": "vite build",
+    "test:integration": "vitest run tests/live-api.integration.test.ts"
   },
   "dependencies": {
     "@neondatabase/serverless": "^1.2.1",

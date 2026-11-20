@@ -3,6 +3,7 @@ import jwt from 'jsonwebtoken';
 import bcrypt from 'bcryptjs';
 import { parse, serialize } from 'cookie';
 import crypto from 'crypto';
+import { getFinalizedResultIndex } from '../scripts/lib/transaction-builders.js';
 
 let databaseUrl: string | undefined;
 function gdu(): string { if (databaseUrl) return databaseUrl; const u = process.env.DATABASE_URL; if (!u) throw new Error('DATABASE_URL not defined'); databaseUrl = u; return u; }
@@ -55,8 +56,9 @@ async function validateCanonicalHtmlModule(module: any): Promise<{ ok: boolean; 
 }
 
 async function writeAudit(session: Session, action: string, entityType: string, entityId: string | null, metadata: any = {}) {
-  try { await sql`INSERT INTO audit_logs (id, actor_id, actor_email, action, entity_type, entity_id, metadata, created_at) VALUES (gen_random_uuid(), ${session.sub}, ${session.email}, ${action}, ${entityType}, ${entityId}, ${JSON.stringify(metadata)}, now())`; }
-  catch { /* audit failure must not interrupt core workflows */ }
+  // Required audit events must not be silently discarded. Callers handling
+  // critical mutations should include audit rows in the same DB transaction.
+  await sql`INSERT INTO audit_logs (id, actor_id, actor_email, action, entity_type, entity_id, metadata, created_at) VALUES (gen_random_uuid(), ${session.sub}, ${session.email}, ${action}, ${entityType}, ${entityId}, ${JSON.stringify(metadata)}, now())`;
 }
 async function getBody(req: Request): Promise<any> {
   const ct = req.headers.get('content-type') || '';
@@ -222,18 +224,25 @@ async function dispatch(req: Request): Promise<Response> {
         const existing = await sql`SELECT id FROM users WHERE lower(email) = ${email}`;
         if (existing[0]) return err('Email sudah digunakan', 409, 'EMAIL_EXISTS');
         const passwordHash = await hashPw(password);
-        const rows = await sql`
-          INSERT INTO users (id, email, password_hash, role, is_active, email_verified, created_at, updated_at)
-          VALUES (gen_random_uuid(), ${email}, ${passwordHash}, ${role}, true, false, now(), now())
-          RETURNING id, email, role, is_active, email_verified, created_at
-        `;
-        const user = rows[0];
-        await sql`
-          INSERT INTO user_profiles (id, user_id, full_name, created_at, updated_at)
-          VALUES (gen_random_uuid(), ${user.id}, ${fullName || null}, now(), now())
-          ON CONFLICT (user_id) DO UPDATE SET full_name = EXCLUDED.full_name, updated_at = now()
-        `;
-        await writeAudit(s, 'USER_CREATED', 'user', user.id, { role, email });
+        const userId = crypto.randomUUID();
+        const txResults = await sqlTransaction([
+          sql`
+            INSERT INTO users (id, email, password_hash, role, is_active, email_verified, created_at, updated_at)
+            VALUES (${userId}, ${email}, ${passwordHash}, ${role}, true, false, now(), now())
+            RETURNING id, email, role, is_active, email_verified, created_at
+          `,
+          sql`
+            INSERT INTO user_profiles (id, user_id, full_name, created_at, updated_at)
+            VALUES (gen_random_uuid(), ${userId}, ${fullName || null}, now(), now())
+            ON CONFLICT (user_id) DO UPDATE SET full_name = EXCLUDED.full_name, updated_at = now()
+          `,
+          sql`
+            INSERT INTO audit_logs (id, actor_id, actor_email, action, entity_type, entity_id, metadata, created_at)
+            VALUES (gen_random_uuid(), ${s.sub}, ${s.email}, 'USER_CREATED', 'user', ${userId}, ${JSON.stringify({ role, email })}, now())
+          `
+        ]);
+        const user = txResults[0]?.[0];
+        if (!user) throw new Error('USER_CREATE_TRANSACTION_RETURNED_NO_ROW');
         return json({ user: { ...user, full_name: fullName || null } }, 201);
       }, ['ADMIN']);
     }
@@ -254,22 +263,29 @@ async function dispatch(req: Request): Promise<Response> {
         const duplicate = await sql`SELECT id FROM users WHERE lower(email) = ${email} AND id <> ${id}`;
         if (duplicate[0]) return err('Email sudah digunakan', 409, 'EMAIL_EXISTS');
       }
-      const rows = await sql`
-        UPDATE users SET email = COALESCE(${email}, email), role = COALESCE(${role}, role),
-        is_active = COALESCE(${active}, is_active), updated_at = now()
-        WHERE id = ${id}
-        RETURNING id, email, role, is_active, email_verified, updated_at
-      `;
-      if (!rows[0]) return err('User tidak ditemukan', 404);
-      if (fullName !== undefined) {
-        await sql`
-          INSERT INTO user_profiles (id, user_id, full_name, created_at, updated_at)
-          VALUES (gen_random_uuid(), ${id}, ${fullName || null}, now(), now())
-          ON CONFLICT (user_id) DO UPDATE SET full_name = EXCLUDED.full_name, updated_at = now()
-        `;
-      }
-      await writeAudit(s, 'USER_UPDATED', 'user', id, { role, email, is_active: active, full_name_changed: fullName !== undefined });
-      return json({ user: rows[0] });
+      const transactionQueries = [
+        sql`
+          UPDATE users SET email = COALESCE(${email}, email), role = COALESCE(${role}, role),
+          is_active = COALESCE(${active}, is_active), updated_at = now()
+          WHERE id = ${id}
+          RETURNING id, email, role, is_active, email_verified, updated_at
+        `
+      ];
+      if (fullName !== undefined) transactionQueries.push(sql`
+        INSERT INTO user_profiles (id, user_id, full_name, created_at, updated_at)
+        VALUES (gen_random_uuid(), ${id}, ${fullName || null}, now(), now())
+        ON CONFLICT (user_id) DO UPDATE SET full_name = EXCLUDED.full_name, updated_at = now()
+      `);
+      transactionQueries.push(sql`
+        INSERT INTO audit_logs (id, actor_id, actor_email, action, entity_type, entity_id, metadata, created_at)
+        SELECT gen_random_uuid(), ${s.sub}, ${s.email}, 'USER_UPDATED', 'user', ${id},
+          ${JSON.stringify({ role, email, is_active: active, full_name_changed: fullName !== undefined })}, now()
+        WHERE EXISTS (SELECT 1 FROM users WHERE id = ${id})
+      `);
+      const txResults = await sqlTransaction(transactionQueries);
+      const user = txResults[0]?.[0];
+      if (!user) return err('User tidak ditemukan', 404);
+      return json({ user });
     }, ['ADMIN']);
   }
 
@@ -294,9 +310,14 @@ async function dispatch(req: Request): Promise<Response> {
         const name: string = b?.name; const desc: string = b?.description;
         if (!name) return err('Name required', 400);
         const tid = s.role === 'ADMIN' ? (b?.teacher_id || s.sub) : s.sub;
-        const rows = await sql`INSERT INTO classes (id, name, description, teacher_id) VALUES (gen_random_uuid(), ${name}, ${desc || null}, ${tid}) RETURNING id, name, description, teacher_id, is_active, created_at`;
-        await writeAudit(s, 'CLASS_CREATED', 'class', rows[0].id, { name });
-        return json({ class: rows[0] }, 201);
+        const classId = crypto.randomUUID();
+        const txResults = await sqlTransaction([
+          sql`INSERT INTO classes (id, name, description, teacher_id) VALUES (${classId}, ${name}, ${desc || null}, ${tid}) RETURNING id, name, description, teacher_id, is_active, created_at`,
+          sql`INSERT INTO audit_logs (id, actor_id, actor_email, action, entity_type, entity_id, metadata, created_at)
+            VALUES (gen_random_uuid(), ${s.sub}, ${s.email}, 'CLASS_CREATED', 'class', ${classId}, ${JSON.stringify({ name })}, now())`
+        ]);
+        if (!txResults[0]?.[0]) throw new Error('CLASS_CREATE_TRANSACTION_RETURNED_NO_ROW');
+        return json({ class: txResults[0][0] }, 201);
       });
     }
     return err('Method not allowed', 405);
@@ -328,9 +349,14 @@ async function dispatch(req: Request): Promise<Response> {
         const isActive = b?.is_active !== undefined ? Boolean(b.is_active) : null;
         if (name === null && b?.description === undefined && isActive === null) return err('No fields', 400);
         if (name !== null && !name) return err('Nama kelas tidak boleh kosong', 400);
-        const rows = await sql`UPDATE classes SET name = COALESCE(${name}, name), description = CASE WHEN ${b?.description !== undefined} THEN ${description} ELSE description END, is_active = COALESCE(${isActive}, is_active), updated_at = now() WHERE id = ${id} RETURNING id, name, description, is_active, updated_at`;
-        await writeAudit(s, 'CLASS_UPDATED', 'class', id, { name_changed: name !== null, active_changed: isActive !== null });
-        return json({ class: rows[0] });
+        const txResults = await sqlTransaction([
+          sql`UPDATE classes SET name = COALESCE(${name}, name), description = CASE WHEN ${b?.description !== undefined} THEN ${description} ELSE description END, is_active = COALESCE(${isActive}, is_active), updated_at = now() WHERE id = ${id} RETURNING id, name, description, is_active, updated_at`,
+          sql`INSERT INTO audit_logs (id, actor_id, actor_email, action, entity_type, entity_id, metadata, created_at)
+            SELECT gen_random_uuid(), ${s.sub}, ${s.email}, 'CLASS_UPDATED', 'class', ${id},
+              ${JSON.stringify({ name_changed: name !== null, active_changed: isActive !== null })}, now()
+            WHERE EXISTS (SELECT 1 FROM classes WHERE id = ${id})`
+        ]);
+        return json({ class: txResults[0]?.[0] });
       });
     }
     if (method === 'POST') {
@@ -345,15 +371,22 @@ async function dispatch(req: Request): Promise<Response> {
           const ed = b?.expires_in_days ? Number(b.expires_in_days) : null;
           const code = b?.code || cryptoRandBytes(4).toString('hex').slice(0, 8).toUpperCase();
           const ea = ed ? new Date(Date.now() + ed * 86400000).toISOString() : null;
-          await sql`UPDATE class_invites SET is_active = false WHERE class_id = ${id} AND is_active = true`;
-          const rows = await sql`INSERT INTO class_invites (id, class_id, code, max_uses, used_count, expires_at, is_active, created_by, created_at) VALUES (gen_random_uuid(), ${id}, ${code}, ${mu || null}, 0, ${ea || null}, true, ${s.sub}, now()) RETURNING id, code, max_uses, used_count, expires_at, is_active, created_at`;
-          await writeAudit(s, 'CLASS_INVITE_CREATED', 'class', id, { max_uses: mu, expires_at: ea });
-          return json({ invite: rows[0] }, 201);
+          const inviteId = crypto.randomUUID();
+          const txResults = await sqlTransaction([
+            sql`UPDATE class_invites SET is_active = false WHERE class_id = ${id} AND is_active = true`,
+            sql`INSERT INTO class_invites (id, class_id, code, max_uses, used_count, expires_at, is_active, created_by, created_at) VALUES (${inviteId}, ${id}, ${code}, ${mu || null}, 0, ${ea || null}, true, ${s.sub}, now()) RETURNING id, code, max_uses, used_count, expires_at, is_active, created_at`,
+            sql`INSERT INTO audit_logs (id, actor_id, actor_email, action, entity_type, entity_id, metadata, created_at)
+              VALUES (gen_random_uuid(), ${s.sub}, ${s.email}, 'CLASS_INVITE_CREATED', 'class', ${id}, ${JSON.stringify({ max_uses: mu, expires_at: ea, invite_id: inviteId })}, now())`
+          ]);
+          return json({ invite: txResults[1]?.[0] }, 201);
         }
         if (b?.action === 'deactivate_invite') {
-          const rows = await sql`UPDATE class_invites SET is_active = false WHERE class_id = ${id} AND is_active = true RETURNING id, code, is_active, used_count, max_uses, expires_at`;
-          await writeAudit(s, 'CLASS_INVITE_DEACTIVATED', 'class', id, { count: rows.length });
-          return json({ invite: rows[0] || null });
+          const txResults = await sqlTransaction([
+            sql`UPDATE class_invites SET is_active = false WHERE class_id = ${id} AND is_active = true RETURNING id, code, is_active, used_count, max_uses, expires_at`,
+            sql`INSERT INTO audit_logs (id, actor_id, actor_email, action, entity_type, entity_id, metadata, created_at)
+              VALUES (gen_random_uuid(), ${s.sub}, ${s.email}, 'CLASS_INVITE_DEACTIVATED', 'class', ${id}, '{}'::jsonb, now())`
+          ]);
+          return json({ invite: txResults[0]?.[0] || null });
         }
         return err('Not found', 404);
       });
@@ -501,10 +534,17 @@ async function dispatch(req: Request): Promise<Response> {
           if (existing[0]) return err('Sesi ini sudah terdaftar di bank HTML', 409, 'SESSION_ALREADY_IMPORTED');
         }
         const initialStatus = sourceSessionId ? 'REVIEW_REQUIRED' : 'DRAFT';
-        const rows = await sql`INSERT INTO html_modules (id, title, description, version, content, checksum, uploaded_by, source_bank_id, source_bank_version, source_session_id, status, is_published, created_at, updated_at) VALUES (gen_random_uuid(), ${title || file.name}, ${desc}, 1, ${content}, ${checksum}, ${s.sub}, ${sourceBankId}, ${sourceBankVersion}, ${sourceSessionId}, ${initialStatus}, false, now(), now()) RETURNING id, title, description, version, checksum, status, is_published, source_bank_id, source_bank_version, source_session_id, created_at`;
-        const mod = rows[0];
-        await sql`INSERT INTO html_module_versions (id, module_id, version, content, checksum, uploaded_by, created_at) VALUES (gen_random_uuid(), ${mod.id}, 1, ${content}, ${checksum}, ${s.sub}, now())`;
-        await writeAudit(s, 'HTML_MODULE_UPLOADED', 'html_module', mod.id, { title: mod.title, source_bank_id: sourceBankId, source_bank_version: sourceBankVersion, source_session_id: sourceSessionId, status: mod.status });
+        const moduleId = crypto.randomUUID();
+        const versionId = crypto.randomUUID();
+        const txResults = await sqlTransaction([
+          sql`INSERT INTO html_modules (id, title, description, version, content, checksum, uploaded_by, source_bank_id, source_bank_version, source_session_id, status, is_published, created_at, updated_at) VALUES (${moduleId}, ${title || file.name}, ${desc}, 1, ${content}, ${checksum}, ${s.sub}, ${sourceBankId}, ${sourceBankVersion}, ${sourceSessionId}, ${initialStatus}, false, now(), now()) RETURNING id, title, description, version, checksum, status, is_published, source_bank_id, source_bank_version, source_session_id, created_at`,
+          sql`INSERT INTO html_module_versions (id, module_id, version, content, checksum, uploaded_by, created_at) VALUES (${versionId}, ${moduleId}, 1, ${content}, ${checksum}, ${s.sub}, now())`,
+          sql`INSERT INTO audit_logs (id, actor_id, actor_email, action, entity_type, entity_id, metadata, created_at)
+            VALUES (gen_random_uuid(), ${s.sub}, ${s.email}, 'HTML_MODULE_UPLOADED', 'html_module', ${moduleId},
+              ${JSON.stringify({ title: title || file.name, source_bank_id: sourceBankId, source_bank_version: sourceBankVersion, source_session_id: sourceSessionId, status: initialStatus })}, now())`
+        ]);
+        const mod = txResults[0]?.[0];
+        if (!mod) throw new Error('HTML_MODULE_CREATE_TRANSACTION_RETURNED_NO_ROW');
         return json({ html_module: mod }, 201);
       });
     }
@@ -552,9 +592,14 @@ async function dispatch(req: Request): Promise<Response> {
           const validation = await validateCanonicalHtmlModule(mod);
           if (!validation.ok) return err(validation.message || 'Materi belum lolos validasi sumber kanonis.', 409, validation.code || 'CANONICAL_VALIDATION_FAILED');
         }
-        const rows = await sql`UPDATE html_modules SET title = COALESCE(${title}, title), description = CASE WHEN ${b?.description !== undefined} THEN ${description} ELSE description END, status = COALESCE(${status}, status), updated_at = now() WHERE id = ${id} RETURNING id, title, description, version, status, is_published, updated_at`;
-        await writeAudit(s, status ? 'HTML_STATUS_UPDATED' : 'HTML_MODULE_UPDATED', 'html_module', id, { status });
-        return json({ html_module: rows[0] });
+        const action = status ? 'HTML_STATUS_UPDATED' : 'HTML_MODULE_UPDATED';
+        const txResults = await sqlTransaction([
+          sql`UPDATE html_modules SET title = COALESCE(${title}, title), description = CASE WHEN ${b?.description !== undefined} THEN ${description} ELSE description END, status = COALESCE(${status}, status), updated_at = now() WHERE id = ${id} RETURNING id, title, description, version, status, is_published, updated_at`,
+          sql`INSERT INTO audit_logs (id, actor_id, actor_email, action, entity_type, entity_id, metadata, created_at)
+            SELECT gen_random_uuid(), ${s.sub}, ${s.email}, ${action}, 'html_module', ${id}, ${JSON.stringify({ status })}, now()
+            WHERE EXISTS (SELECT 1 FROM html_modules WHERE id = ${id})`
+        ]);
+        return json({ html_module: txResults[0]?.[0] });
       });
     }
     if (method === 'POST') {
@@ -567,9 +612,14 @@ async function dispatch(req: Request): Promise<Response> {
           const current = await sql`SELECT status FROM html_modules WHERE id = ${id}`;
           const ip = b?.is_published === true;
           if (ip && current[0]?.status !== 'APPROVED' && (await sql`SELECT source_session_id FROM html_modules WHERE id = ${id}`)[0]?.source_session_id) return err('Konten sesi kanonis harus disetujui admin sebelum dipublikasikan', 409, 'REVIEW_REQUIRED');
-          const rows = await sql`UPDATE html_modules SET is_published = ${ip}, updated_at = now() WHERE id = ${id} RETURNING id, is_published, status`;
-          await writeAudit(s, ip ? 'HTML_MODULE_PUBLISHED' : 'HTML_MODULE_UNPUBLISHED', 'html_module', id, {});
-          return json({ html_module: rows[0] });
+          const action = ip ? 'HTML_MODULE_PUBLISHED' : 'HTML_MODULE_UNPUBLISHED';
+          const txResults = await sqlTransaction([
+            sql`UPDATE html_modules SET is_published = ${ip}, updated_at = now() WHERE id = ${id} RETURNING id, is_published, status`,
+            sql`INSERT INTO audit_logs (id, actor_id, actor_email, action, entity_type, entity_id, metadata, created_at)
+              SELECT gen_random_uuid(), ${s.sub}, ${s.email}, ${action}, 'html_module', ${id}, '{}'::jsonb, now()
+              WHERE EXISTS (SELECT 1 FROM html_modules WHERE id = ${id})`
+          ]);
+          return json({ html_module: txResults[0]?.[0] });
         }
         return err('Not found', 404);
       });
@@ -612,9 +662,15 @@ async function dispatch(req: Request): Promise<Response> {
           if (!expected || Number(keyed[0]?.count || 0) !== expected) return err('Bank soal atau answer key untuk sesi HTML ini belum lengkap di Neon. Import dan verifikasi bank/kunci terlebih dahulu.', 409, 'QUESTION_KEY_COVERAGE_INCOMPLETE');
         }
         const vr = (await sql`SELECT id, version, content, checksum FROM html_module_versions WHERE module_id = ${hid} ORDER BY version DESC LIMIT 1`)[0];
-        const rows = await sql`INSERT INTO class_assignments (id, class_id, html_module_id, html_module_version_id, title, start_at, due_at, is_active, created_by, created_at) VALUES (gen_random_uuid(), ${cid}, ${hid}, ${vr ? vr.id : null}, ${title}, ${sa || null}, ${da || null}, true, ${s.sub}, now()) RETURNING id, class_id, html_module_id, html_module_version_id, title, start_at, due_at, is_active, created_at`;
-        await writeAudit(s, 'ASSIGNMENT_CREATED', 'assignment', rows[0].id, { class_id: cid, html_module_id: hid, title });
-        return json({ assignment: rows[0] }, 201);
+        const assignmentId = crypto.randomUUID();
+        const txResults = await sqlTransaction([
+          sql`INSERT INTO class_assignments (id, class_id, html_module_id, html_module_version_id, title, start_at, due_at, is_active, created_by, created_at) VALUES (${assignmentId}, ${cid}, ${hid}, ${vr ? vr.id : null}, ${title}, ${sa || null}, ${da || null}, true, ${s.sub}, now()) RETURNING id, class_id, html_module_id, html_module_version_id, title, start_at, due_at, is_active, created_at`,
+          sql`INSERT INTO audit_logs (id, actor_id, actor_email, action, entity_type, entity_id, metadata, created_at)
+            VALUES (gen_random_uuid(), ${s.sub}, ${s.email}, 'ASSIGNMENT_CREATED', 'assignment', ${assignmentId},
+              ${JSON.stringify({ class_id: cid, html_module_id: hid, title })}, now())`
+        ]);
+        if (!txResults[0]?.[0]) throw new Error('ASSIGNMENT_CREATE_TRANSACTION_RETURNED_NO_ROW');
+        return json({ assignment: txResults[0][0] }, 201);
       });
     }
     return err('Method not allowed', 405);
@@ -727,11 +783,43 @@ async function dispatch(req: Request): Promise<Response> {
           }
           const rid = ik || cryptoRandBytes(4).toString('hex');
           const vocabularyPayload = { vocabulary_responses: b?.vocabulary_responses || {}, vocabulary_self_assessment: b?.vocabulary_self_assessment || {}, source_session_id: sourceSessionId, assessment_status: 'FORMATIVE_NOT_GRADED' };
-          if (Object.keys(vocabularyPayload.vocabulary_responses).length || Object.keys(vocabularyPayload.vocabulary_self_assessment).length) transactionQueries.push(sql`INSERT INTO attempt_events (id, attempt_id, event_type, payload, created_at) VALUES (gen_random_uuid(), ${id}, 'VOCABULARY_RECALL_REPORT', ${JSON.stringify(vocabularyPayload)}, now())`);
-          transactionQueries.push(sql`UPDATE attempts SET status = 'submitted', score = ${ts}, max_score = ${ms}, submitted_at = now() WHERE id = ${id}`);
-          transactionQueries.push(sql`INSERT INTO submission_receipts (id, attempt_id, receipt_id, submitted_at) VALUES (gen_random_uuid(), ${id}, ${rid}, now())`);
-          await sqlTransaction(transactionQueries);
-          await writeAudit(s, 'ATTEMPT_SUBMITTED', 'attempt', id, { source_session_id: sourceSessionId, score: ts, max_score: ms });
+          // Serialize competing submissions on the attempt row. Every write after
+          // the lock is guarded by the in_progress -> submitting claim.
+          transactionQueries.unshift(sql`SELECT id FROM attempts WHERE id = ${id} FOR UPDATE`);
+          transactionQueries.splice(1, 0, sql`UPDATE attempts SET status = 'submitting' WHERE id = ${id} AND status = 'in_progress' RETURNING id`);
+          // Guard answer writes so a request that lost the claim cannot append data.
+          // Rebuild answer inserts as INSERT .. SELECT guarded by the claim state.
+          const answerCount = ar.length;
+          for (let i = 0; i < answerCount; i++) {
+            const qid = String(ans[i].question_id || '');
+            const q = sourceSessionId ? sourceQuestionMap.get(qid) : legacyQuestionMap.get(qid);
+            const av = ans[i].answer;
+            const row = ar[i];
+            transactionQueries[i + 2] = sql`INSERT INTO attempt_answers (id, attempt_id, question_id, answer, is_correct, points_earned, created_at)
+              SELECT gen_random_uuid(), ${id}, ${q.id}, ${JSON.stringify(av)}, ${row.is_correct}, ${row.points_earned}, now()
+              WHERE EXISTS (SELECT 1 FROM attempts WHERE id = ${id} AND status = 'submitting')`;
+          }
+          if (Object.keys(vocabularyPayload.vocabulary_responses).length || Object.keys(vocabularyPayload.vocabulary_self_assessment).length) transactionQueries.push(sql`INSERT INTO attempt_events (id, attempt_id, event_type, payload, created_at)
+            SELECT gen_random_uuid(), ${id}, 'VOCABULARY_RECALL_REPORT', ${JSON.stringify(vocabularyPayload)}, now()
+            WHERE EXISTS (SELECT 1 FROM attempts WHERE id = ${id} AND status = 'submitting')`);
+          transactionQueries.push(sql`UPDATE attempts SET status = 'submitted', score = ${ts}, max_score = ${ms}, submitted_at = now() WHERE id = ${id} AND status = 'submitting' RETURNING id`);
+          transactionQueries.push(sql`INSERT INTO submission_receipts (id, attempt_id, receipt_id, submitted_at)
+            SELECT gen_random_uuid(), ${id}, ${rid}, now()
+            WHERE EXISTS (SELECT 1 FROM attempts WHERE id = ${id} AND status = 'submitted')
+            ON CONFLICT (attempt_id) DO NOTHING`);
+          transactionQueries.push(sql`INSERT INTO audit_logs (id, actor_id, actor_email, action, entity_type, entity_id, metadata, created_at)
+            SELECT gen_random_uuid(), ${s.sub}, ${s.email}, 'ATTEMPT_SUBMITTED', 'attempt', ${id}, ${JSON.stringify({ source_session_id: sourceSessionId, score: ts, max_score: ms })}, now()
+            WHERE EXISTS (SELECT 1 FROM submission_receipts WHERE attempt_id = ${id} AND receipt_id = ${rid})`);
+          const txResults = await sqlTransaction(transactionQueries);
+          const finalized = txResults[getFinalizedResultIndex(txResults.length)];
+          if (!finalized?.length) {
+            const existingReceipt = ik ? await sql`SELECT receipt_id FROM submission_receipts WHERE attempt_id = ${id} AND receipt_id = ${ik}` : [];
+            if (existingReceipt[0]) {
+              const current = await sql`SELECT score, max_score, status, submitted_at FROM attempts WHERE id = ${id}`;
+              return json({ attempt: { id, ...current[0] }, duplicate: true });
+            }
+            return err('Attempt has already been submitted or is being submitted.', 409, 'ATTEMPT_ALREADY_SUBMITTED');
+          }
           return json({ attempt: { id, score: ts, max_score: ms, status: 'submitted', submitted_at: new Date().toISOString() }, answers: ar, receipt_id: rid });
         } catch (e) { throw e; }
       });
