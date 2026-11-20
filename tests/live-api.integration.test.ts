@@ -202,6 +202,14 @@ suite('Live API backtest against disposable Neon database', () => {
     expect(allowed.status).toBe(201);
     const body = await allowed.json();
     ids.attempt = body.attempt.id;
+    const ownAttempts = await (await GET(request('/api/attempts', 'GET', undefined, cookies.studentOne))).json();
+    const otherAttempts = await (await GET(request('/api/attempts', 'GET', undefined, cookies.studentTwo))).json();
+    const teacherAttempts = await (await GET(request('/api/attempts', 'GET', undefined, cookies.teacherOne))).json();
+    const otherTeacherAttempts = await (await GET(request('/api/attempts', 'GET', undefined, cookies.teacherTwo))).json();
+    expect(ownAttempts.attempts.map((item: any) => item.id)).toContain(ids.attempt);
+    expect(otherAttempts.attempts.map((item: any) => item.id)).not.toContain(ids.attempt);
+    expect(teacherAttempts.attempts.map((item: any) => item.id)).toContain(ids.attempt);
+    expect(otherTeacherAttempts.attempts.map((item: any) => item.id)).not.toContain(ids.attempt);
   });
 
   it('serializes two concurrent authenticated submissions into one receipt and audit event', async () => {
