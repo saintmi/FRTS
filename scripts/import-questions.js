@@ -4,7 +4,6 @@ import os from 'node:os';
 import crypto from 'node:crypto';
 import { execFileSync, execSync } from 'node:child_process';
 import { normalizeVocabularyFirstBank } from './lib/vocabulary-first-adapter.js';
-import { neon } from '@neondatabase/serverless';
 import { selectCanonicalBankJson, validateBankSource } from './lib/question-bank-validation.js';
 import { importPackageAtomically } from './lib/package-importer.js';
 
@@ -166,8 +165,8 @@ function normalizeBank(bankRaw, sourcePackage, packageVersion) {
 }
 
 async function main() {
-  const env = loadEnv();
-  const sql = neon(env.DATABASE_URL);
+  const env = DRY_RUN ? {} : loadEnv();
+  const sql = DRY_RUN ? null : (await import('@neondatabase/serverless')).neon(env.DATABASE_URL);
   const report = { packages: [], total_sessions: 0, total_questions: 0, imported_questions: 0, skipped: 0, errors: [] };
 
   const activePackages = packageArg
