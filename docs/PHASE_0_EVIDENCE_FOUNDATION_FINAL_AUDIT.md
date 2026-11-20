@@ -692,3 +692,66 @@ This adapter and CI run do not close the following independent gates:
 5. Teacher approval for the 104 proposed keys and formal academic sign-off remain separate from the user's manual validation of the learning materials. No unapproved key has been promoted.
 
 **Decision:** Phase 0 remains `ACCEPTANCE_BLOCKED`. PR #3 remains Draft and unmerged. No production migration, content import, or production data write was performed.
+
+
+## 29. Fresh-schema Neon backtest and authenticated live-test harness (20 November 2026)
+
+### Migration version collision fixed
+
+A fresh review found two files sharing migration prefix `006_`:
+- `006_question_bank_import_identity_constraints.sql`
+- `006_question_bank_source_uniques.sql`
+
+Both attempted to create the same natural-key indexes under different names, risking duplicate physical indexes and ambiguous migration ordering on clean installs. The migrations are now consolidated into the single canonical file `006_question_bank_import_identity_constraints.sql`; the duplicate file was removed. The canonical migration retains the four source-identity indexes, conditional option-position unique index, and the unique submission-receipt-per-attempt index.
+
+A migration-manifest test now fails if numbered migration versions are duplicated or if the canonical 006 omits one of these constraints.
+
+### Fresh disposable database — SQL-level result
+
+Created a separate empty database `frts_phase0_migration_test` on disposable Neon branch `frts-phase0-final-runtime-20261120` (branch ID `br-bitter-queen-aosq5seo`). It is not production and is separate from the pre-existing test database.
+
+Executed migration SQL 001–006 in one database transaction per migration:
+| Migration | Statements | Result |
+|---|---:|---|
+| 001 initial | 52 | PASS |
+| 002 question bank source | 4 | PASS |
+| 003 HTML source session | 3 | PASS |
+| 004 HTML source bank | 3 | PASS |
+| 005 HTML source bank version | 3 | PASS |
+| 006 consolidated source identity constraints | 7 | PASS |
+
+Readback confirms exactly six migration ledger versions and the six expected unique indexes. A deliberately failing transaction (create table, insert row, then division by zero) rolled back completely; `to_regclass('public.p0_atomicity_rollback_probe')` returned NULL. Reapplying 006 succeeded and did not add duplicate indexes.
+
+**Scope limitation:** this proves the migration SQL against a clean schema and Neon transaction rollback/idempotency. It does not prove execution of the Node CLI `scripts/migrate.js` itself. The CLI runtime could not be launched in this environment because the locked Neon npm dependency was not available locally, network access to npm/GitHub from the container was unavailable, and the uploaded `node_modules.zip` has no authorized raw-byte materialization path.
+
+### Exact Batch 1 archive recheck
+
+The original v0.6.1 archive was re-extracted and its package validator rerun:
+- Validator: PASS, 8 sessions, 200 unique questions, 120 unique stimuli.
+- Legacy source-verified keys: 96.
+- Proposed keys: 104.
+- Independent student/teacher JSON reconciliation: 200 unique key records cover all 200 questions exactly once; session/stimulus links and A/B/C/D answers all match; **0 cross-file errors**.
+- No student or teacher content was edited.
+
+### Authenticated API live-test harness
+
+Added `tests/live-api.integration.test.ts` and `npm run test:integration`. The opt-in suite:
+- Refuses to run unless `FRTS_ALLOW_LIVE_BACKTEST=YES`, `FRTS_BACKTEST_DATABASE=frts_phase0_migration_test`, and the connected database reports that exact name.
+- Creates/upserts five mock accounts (one admin, two teachers, two students), profiles, two separately owned classes, class memberships, one mock module, one mock bank/question/key, and a teacher-created assignment.
+- Authenticates each role through the actual `/api/auth/login` handler and exercises the actual API route handlers with a real Neon database.
+- Covers admin-only user directory, teacher ownership, student membership, assignment/attempt visibility, unauthorized attempt start, and two concurrent submissions with exactly one answer/receipt/audit result.
+- Retains test fixtures in the disposable database for repeatable manual review.
+
+CI does not contain a disposable Neon credential, so the 7 live integration tests are intentionally skipped by default. Latest GitHub Actions run `44698194849` on commit `ca518a38184758e29ba514982f778ed7bc5ef784`: lint 0 errors (93 warnings), TypeScript/Vite build PASS, 46 tests PASS, 7 live tests SKIPPED. A skipped live suite is not a live acceptance PASS.
+
+The explicit attempt to create mock accounts directly through the Neon SQL action was blocked by its safety checks on writes to the authentication users table. No workaround or direct credential-table write was attempted. The live test harness contains the approved mock-account creation flow, but those five accounts have **not** yet been created in the disposable database.
+
+### Remaining blockers
+
+1. Execute the Node CLI `scripts/migrate.js` against the empty disposable database using the locked npm dependencies; the SQL statements and transaction behavior have passed independently.
+2. Run `npm run test:integration` with a disposable-database connection and test-only AUTH_SECRET/password; confirm all 7 tests execute and pass (not skipped).
+3. Run the Batch 1 importer dry-run through the actual Node CLI with the exact archive in local ignored `content/imports/`. The dry-run no longer requires database credentials. No actual package import has been performed.
+4. Do not promote the 104 proposed keys. The 96 legacy keys alone are insufficient for a full 25-question canonical session score; official canonical module assignment remains blocked until all required keys have separately approved status.
+5. Exact package approval manifest remains absent. No package import has been authorized by creating a fabricated approval record.
+
+**Decision:** Phase 0 remains `ACCEPTANCE_BLOCKED`; PR #3 remains Draft and unmerged. The fresh-schema SQL migration gate is now PASS, but CLI runtime, live authenticated API execution, and package dry-run remain outstanding. No production migration, import, or write occurred.
