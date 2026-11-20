@@ -46,3 +46,27 @@ The Neon SQL migration test validates migration statements and transaction seman
 ## Import backtest
 
 Batch 1 v0.6.1 package import must be run as a dry-run first. Non-dry-run import requires the exact archive SHA-256 and bank identity/version in the local-only `content/imports/approved-package-manifest.json`. Never commit the ZIP, teacher JSON, answer keys, or approval manifest to the public repository. The 104 proposed keys remain excluded from official scoring regardless of package import approval.
+
+
+## Execute the Node migration CLI against an empty database
+
+A second empty database, `frts_phase0_cli_test`, has been created on the same disposable Neon branch specifically for the actual CLI path. It is separate from the manually SQL-validated `frts_phase0_migration_test` database used by the authenticated API suite.
+
+On the admin workstation, set `DATABASE_URL` to the Neon connection string for `frts_phase0_cli_test` and run:
+
+```powershell
+npm ci
+npm run migrate
+```
+
+Expected result: APPLY 001 through 006, each reported atomic, followed by the six ordered migration versions. Then verify the ledger and expected unique indexes through Neon SQL. Do not point this command at the production database.
+
+## Execute the exact Batch 1 importer dry-run
+
+Place the already validated `FRTS_Batch_01_Bank_Soal_v0.6.1_CLAUDE_AUDIT_CANDIDATE.zip` in the ignored local `content/imports/` directory. The importer dry-run no longer loads the Neon driver or requires `DATABASE_URL`.
+
+```powershell
+npm run import -- --package FRTS_Batch_01_Bank_Soal_v0.6.1_CLAUDE_AUDIT_CANDIDATE.zip --dry-run
+```
+
+Expected counts: 8 sessions, 200 questions, 120 stimuli, 96 official source keys, 104 proposed keys excluded from official scoring. A dry-run is not an import and does not authorize the import manifest.
