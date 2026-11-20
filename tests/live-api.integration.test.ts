@@ -8,7 +8,7 @@ const enabled = process.env.FRTS_ALLOW_LIVE_BACKTEST === 'YES' &&
   process.env.FRTS_BACKTEST_DATABASE === 'frts_phase0_migration_test';
 
 const suite = enabled ? describe : describe.skip;
-const password = process.env.FRTS_BACKTEST_PASSWORD || 'FRTS-Backtest-Only-2026!x';
+const password = process.env.FRTS_BACKTEST_PASSWORD || '';
 const secret = process.env.AUTH_SECRET || 'frts-disposable-live-backtest-secret-only';
 let sql: ReturnType<typeof neon>;
 let GET: (request: Request) => Promise<Response>;
